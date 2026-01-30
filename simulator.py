@@ -9,15 +9,20 @@ from mpl_toolkits.mplot3d import Axes3D
 import argparse
 import os
 import configparser
-from viewer import SimViewer
+from viewer import View as SimViewer
+from scipy.spatial import cKDTree
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--run','-r', help="Run a new simulation given a .ini file path of parameters.", nargs='?', const=True)
-parser.add_argument('--runview','-rv', help="Like -r but automatically begins viewing the", nargs='?', const=True)
-parser.add_argument('--genps','-g',type=str, help="generate an empty .ini with default parameters", nargs='?', const='.')
-parser.add_argument('--view','-v',type=str, help="View a previous simulation, given the file path of a valid .npz")
-parser.add_argument('--save','-s', help="Save the run as an .npz, given a string name (will default to date time)")
+parser.add_argument('--runandview','-rv', help="Like -r but automatically begins viewing the", nargs='?', const=True)
+parser.add_argument('--generate-params','-g',type=str, help="generate an empty .ini with default parameters", nargs='?', const='.')
+parser.add_argument('--view','-v',type=str,nargs='+', help="View a previous simulation, given the file path of a valid .npz")
+parser.add_argument('--save','-s', help="Save the run as an .npz, given a string name (will default to date time)", nargs='?', const=True)
+
+# Optimisation focused definition
+EMPTY_0x2 = np.empty((0, 2))
+EPS =1e-12 # used for avoiding divide by 0
 
 # these ones are how lymburn inits it's variables
 DEFAULTS = {
@@ -46,9 +51,6 @@ DEFAULTS = {
 "RAD_REPULSION" : 1,
 "RAD_PREDATOR" : 1,
 
-# time step / simulation
-"DELTA_T" : 0.02,
-
 # Lorenz conditions
 "L_SIGMA" : 10.0,
 "L_RHO" : 28.0,
@@ -62,7 +64,7 @@ DEFAULTS = {
 "L_SAMPLING_RATE" : 0.02 # number of sample per time step, also kind of predator speed
 }
 
-# Boid Functions
+# Boid Functions----------------------------------------------------------------
 
 ## Neighbour Functions
 def update_neighbours(neighbour_dict,boid_positions):
@@ -121,26 +123,24 @@ def get_neighbours(n,positions,velocities):
     return a, r
 
 ## Forces
-def repulsion_force(boid,neis_x,debug=False):
+def repulsion_force(boid,neis_x):
     """ 
         boid is an np.array(2) [x,y] of a given boid
         neighoburs is an np.array(2,n) where n is the number of neighbours
     """
-    force = np.array([0.0,0.0])
+    if len(neis_x)==0: return np.zeros(2)
+
+    d = boid - neis_x
+    denom = (d[:,0]**2 + d[:,1]**2) + EPS
+    return (d / denom[:,None]).sum(axis=0)
+
+    force = np.zeros(2)
     for n in neis_x:
         if np.array_equal(n,boid): continue  # boids consider themselves neighbours
-                                # this is useful for finding the avg position in homing, but should be skipped here
-
+        
         numerator = boid - n
-
         denom = np.linalg.norm(boid-n) ** 2
         force += (numerator/denom)
-
-        if(debug): 
-            print(f'Force total: {force}')
-            print(f'\t{numerator} / {denom} = {numerator/denom}')
-            print(f'\tXi = {boid}, Xj = {n}')
-    
     return force
 
 def alignment_force(boid_v,neis_v):
@@ -154,6 +154,9 @@ def homing_force(boid,home=np.array([0.0,0.0])):
     return home-boid
 
 def friction_force(boid_v):
+    speed = np.hypot(boid_v[0],boid_v[1])
+    return -boid_v * ((speed - K_SPEED) / K_SPEED)
+
     denom = (np.linalg.norm(boid_v) - K_SPEED) * (boid_v*-1)
     force = denom/K_SPEED
     return force
@@ -170,10 +173,10 @@ def predator_force(boid_x,pred_x):
     else:
         return np.array([0.0,0.0])
 
-def total_force(boid_x,boid_v,a_neighbours,r_neighbours,pred_x=None,debug=False):
+def total_force(boid_x,boid_v,a_neighbours,r_neighbours,pred_x=None):
 #            |-coefficent---|-force---------|-force-params---------|
-    force = ((K_ALIGNMENT*  alignment_force (boid_v,a_neighbours.velocities)) +
-            (K_REPULSION *  repulsion_force (boid_x,r_neighbours.positions)) +
+    force = ((K_ALIGNMENT*  alignment_force (boid_v,a_neighbours)) +
+            (K_REPULSION *  repulsion_force (boid_x,r_neighbours)) +
             (K_FRICTION  *  friction_force  (boid_v)) +
             (K_HOMING    *  homing_force    (boid_x)) +
             (K_PREDATOR  *  predator_force  (boid_x,pred_x) ))       
@@ -181,25 +184,27 @@ def total_force(boid_x,boid_v,a_neighbours,r_neighbours,pred_x=None,debug=False)
     # sigmoidal function
     force_sigmoid = ALPHA * np.tanh(BETA * force)
 
-    # debug showing all the forces
-    if(debug):
-        print(   
-                f'Force: {force} Force Sigmoid: {force_sigmoid}',
-                f'\n\tFa: { K_ALIGNMENT*alignment_force(boid_v,a_neighbours.velocities) }',
-                f'\n\tFr: { K_REPULSION*repulsion_force(boid_x,r_neighbours.positions) }',
-                f'\n\tFf: { K_FRICTION*friction_force(boid_v) }',
-                f'\n\tFh: { K_HOMING*homing_force(boid_x) }',
-                f'\n\tFp: { K_PREDATOR *predator_force(boid_x,pred_x) }')
-    
     return force_sigmoid
 
-def force_matrix(boid_xs,boid_vs,ns,pred_x=None,debug=False):
+def force_matrix(boid_xs,boid_vs,pred_x=None):
     forces = np.empty((len(boid_xs),2))
-    for i, (x,v,n) in enumerate(zip(boid_xs,boid_vs,ns.values())):
 
-        attraction_neighbours, repulsion_neighbours = get_neighbours(n,boid_xs,boid_vs)
+    tree = cKDTree(boid_xs)
+    align_lists = tree.query_ball_point(boid_xs,r=RAD_ALIGNMENT)
+    repulsion_lists = tree.query_ball_point(boid_xs,r=RAD_REPULSION)
 
-        forces[i] = total_force(x,v,attraction_neighbours,repulsion_neighbours,pred_x,debug)
+
+
+    for i, (x,v) in enumerate(zip(boid_xs,boid_vs)):
+        a_idx = [j for j in align_lists[i] if j != i]
+        r_idx = [j for j in repulsion_lists[i] if j != i]
+
+        a_neis_v = boid_vs[a_idx] if a_idx else EMPTY_0x2
+        r_neis_x = boid_xs[r_idx] if r_idx else EMPTY_0x2
+
+        forces[i] = total_force(x,v,a_neis_v,r_neis_x,pred_x)
+
+
     return forces
 
 def lorenz_equations(t,start_states):
@@ -213,8 +218,10 @@ def rescale(axis):
     return 2 * (axis- np.mean(axis)) / np.std(axis)
 
 def generate_lorenz(time_steps, sample_rate, x_init, y_init, z_init):
-    soln = solve_ivp(lorenz_equations, t_span=(0,time_steps) ,y0=(x_init,y_init,z_init) ,dense_output=True)
-    t = np.linspace(0, time_steps, int(time_steps/sample_rate))
+    lorenz_segment = time_steps*sample_rate
+
+    soln = solve_ivp(lorenz_equations, t_span=(0,lorenz_segment) ,y0=(x_init,y_init,z_init) ,dense_output=True)
+    t = np.linspace(0, lorenz_segment, time_steps)
     coords = soln.sol(t).T
 
     rescaled_x_coords = rescale(coords[:, 0])
@@ -234,31 +241,51 @@ def generate_flock(flock_size,lim,random_velocity=False):
     # returns positions, velocities, neighbour data
     return x, v, n
 
-def evolve(prior_x,prior_v,n,prior_lorenz_x):
+def evolve(t,positions,velocities,prior_lorenz_x):
     '''
     the priors are the given parameter at t
     '''
-    new_x = deepcopy(prior_x)
-    new_v = deepcopy(prior_v)
-    
-    
-
-    #1. Calculate neighbours
-        # given the neighbour dictionary (to be changed), and the positions of all the boids
-    update_neighbours(n,prior_x)
+    current_x = positions[t]
+    current_v = velocities[t]
 
     #2. Create force matrix
-    fm = force_matrix(new_x,new_v,n,prior_lorenz_x,False)
+    fm = force_matrix(current_x,current_v,prior_lorenz_x)
 
     #3. update velocity matrix
     #4. update position matrix
-    for i,v in enumerate(new_v):
-        new_v[i]+=fm[i] * DELTA_T
-        new_x[i]+= new_v[i] * DELTA_T
+    new_v = current_v + (fm * DELTA_T)
+    new_x = current_x + (new_v * DELTA_T)
 
-    return new_x,new_v,n
+    return new_v,new_x
+
+def run_simulation(params: dict):
+    apply_params(params)
+
+    positions = []
+    velocities = []
+
+    lorenz = generate_lorenz(TIME_STEPS, L_SAMPLING_RATE, X_LORENZ, Y_LORENZ, Z_LORENZ)
+
+    p, v, _ = generate_flock(BOID_COUNT, SPAWN_BOUNDS, RANDOM_VELOCITY)
+    positions.append(p)
+    velocities.append(v)
+
+    for t in trange(TIME_STEPS - 1):
+        new_v, new_x = evolve(t,positions, velocities, lorenz[t])
+        positions.append(new_x)
+        velocities.append(new_v)
+
+    return {
+        "positions": positions,
+        "velocities": velocities,
+        "predator_positions": lorenz,
+        "time_steps": TIME_STEPS,
+        "boid_count": BOID_COUNT,
+        "bounds": SPAWN_BOUNDS,
+    }
 
 
+#----------------------------------------------------------------
 # functions below were initially written by CHATGPT, but reviewed and modified by myself 
 def load_ini(path: str) -> dict:
     cfg = configparser.ConfigParser()
@@ -379,34 +406,7 @@ def apply_params(params: dict = DEFAULTS):
     Z_LORENZ = float(params["Z_LORENZ"])
     L_SAMPLING_RATE = float(params["L_SAMPLING_RATE"])
 
-def run_simulation(params: dict):
-    apply_params(params)
-
-    positions = []
-    velocities = []
-
-    lorenz = generate_lorenz(TIME_STEPS, L_SAMPLING_RATE, X_LORENZ, Y_LORENZ, Z_LORENZ)
-
-    p, v, n = generate_flock(BOID_COUNT, SPAWN_BOUNDS, RANDOM_VELOCITY)
-    positions.append(p)
-    velocities.append(v)
-    neighbours = n
-
-    for t in trange(TIME_STEPS - 1):
-        new_p, new_v, neighbours = evolve(positions[t], velocities[t], neighbours, lorenz[t])
-        positions.append(new_p)
-        velocities.append(new_v)
-
-    return {
-        "positions": positions,
-        "velocities": velocities,
-        "predator_positions": lorenz,
-        "time_steps": TIME_STEPS,
-        "boid_count": BOID_COUNT,
-        "bounds": SPAWN_BOUNDS,
-    }
-
-def save_run(data: dict, name: str | None = None, out_dir: str = "boid_runs") -> str:
+def save_run(data: dict, name: str | None = None, out_dir: str = "boid_runs",params:dict = None,config_title:str = None) -> str:
     os.makedirs(out_dir, exist_ok=True)
     if not name:
         name = datetime.now().strftime("%d-%m-%Y-%H%M-%S")
@@ -420,27 +420,38 @@ def save_run(data: dict, name: str | None = None, out_dir: str = "boid_runs") ->
         time_steps=data["time_steps"],
         boid_count=data["boid_count"],
         bounds=data["bounds"],
+        config=params,
+        config_title = [config_title]
     )
     return path
 
 def load_run(path: str) -> dict:
     z = np.load(path, allow_pickle=True)
-    return {
-        "positions": z["positions"],
-        "velocities": z["velocities"],
-        "predator_positions": z["predator_positions"],
-        "time_steps": int(z["time_steps"]),
-        "boid_count": int(z["boid_count"]),
-        "bounds": z["bounds"],
-    }
+    run_dict = {}
+    run_dict["positions"] = z.get("positions"),
+    run_dict["velocities"] = z.get("velocities"),
+    run_dict["predator_positions"] = z.get("predator_positions"),
+    run_dict["time_steps"] = int(z.get("time_steps")),
+    run_dict["boid_count"] = int(z.get("boid_count")),
+    run_dict["bounds"] = z.get("bounds"),
+    run_dict["config_title"] = z.get("config_title")
+    
+    print(f"Checking if features of '{path}' are up to date...")
+    for k,v in run_dict.items():
+        if type(v) is tuple:
+            run_dict[k] = v[0]
+        if v is None:
+            print(f"\tvalue for '{k}' is missing, features relating to this will not work thus.")
 
+    return run_dict
+#----------------------------------------------------------------
 
 def main():
     args = parser.parse_args()
     print(args)
 
     # gen empty ini
-    if args.genps:
+    if args.generate_params:
         out_path = "default_params.ini"
         write_default_ini(out_path)
         print(f"Wrote default ini to: {out_path}")
@@ -448,39 +459,38 @@ def main():
 
     # rerun / view an existing run
     if args.view:
-        data = load_run(args.view)
-        SimViewer(data)
+        filenames = args.view
+        filenames = np.array(filenames).flatten()
+        datas =[load_run(f) for f in filenames]
+        SimViewer(datas)
         return
 
     # run a new simulation from ini
-    if args.run or args.runview:
-        ini_path = args.run if args.run else args.runview
+    if args.run or args.runandview:
+        ini_path = args.run if args.run else args.runandview
         if not isinstance(ini_path,str) or ini_path is None:
             print("---USING DEFAULT PARAMETERS---")
-        params = load_ini(ini_path)
+            params = DEFAULTS
+        else:
+            params = load_ini(ini_path)
         data = run_simulation(params)
 
         saved_path = None
         if args.save is not None:
-            # If -s provided with a string, use it. If -s provided but empty (rare), default to datetime.
-            save_name = args.save if isinstance(args.save, str) and args.save.strip() else None
-            saved_path = save_run(data, save_name)
+            if args.save == False:
+                save_name = datetime.now().strftime('%d-%m-%Y-%H%M-%S')
+            else:
+                save_name = args.save if isinstance(args.save, str) and args.save.strip() else None
+
+            saved_path = save_run(data, save_name,params=params,config_title=save_name)
             print(f"Saved run to: {saved_path}")
 
-        if args.runview:
-            SimViewer(data)
+        if args.runandview:
+            SimViewer([data])
         return
 
     # If no args: show help
     parser.print_help()
-
-
-
-
-
-
-
-
 
 if __name__ == "__main__":
     main()
