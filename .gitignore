@@ -2,3 +2,4 @@ gifs
 images
 __pycache__
 boid_runs/*
+.DS_Store
