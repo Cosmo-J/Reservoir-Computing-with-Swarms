@@ -1,3 +1,4 @@
-/gifs
-/images
-/__pycache__
+gifs
+images
+__pycache__
+boid_runs/*
