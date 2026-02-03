@@ -13,18 +13,18 @@ from viewer import View as SimViewer
 from scipy.spatial import cKDTree
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,              help="Run a new simulation given a .ini file path of parameters.")
-parser.add_argument('--run-view',     '-rv',    type=str,   nargs='?', const=True,                help="Like -r but automatically begins viewing the simulation(s).")
-parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                 help="Use with run or runview to perform multiple simulations.")
-parser.add_argument('--seed',                   type=int,   nargs='?', const=1,                         help="Give a random seed to produce identical runs. Default seed is '1'.")
-
-parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='.',               help="generate an empty .ini with default parameters.")
-parser.add_argument('--view',           '-v',   type=str,   nargs='+',                          help="View a previous simulation, given the file path of a valid '.npz'.")
-parser.add_argument('--save',           '-s',               nargs='?', const=True,              help="Save the run as an '.npz', given a string name (will default to date time).")
+parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,  help="Run a new simulation given a .ini file path of parameters.")
+parser.add_argument('--run-view',     '-rv',    type=str,   nargs='?', const=True,  help="Like -r but automatically begins viewing the simulation(s).")
+parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,   help="Use with run or runview to perform multiple simulations.")
+parser.add_argument('--seed',                   type=int,   nargs='?', const=1,     help="Give a random seed to produce identical runs. Default seed is '1'.")
+parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='.',   help="generate an empty .ini with default parameters.")
+parser.add_argument('--view',           '-v',   type=str,   nargs='+',              help="View a previous simulation, given the file path of a valid '.npz'.")
+parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
 
 # Optimisation focused definition
 EMPTY_0x2 = np.empty((0, 2))
 EPS =1e-12 # used for avoiding divide by 0
+DEFAULT_SAVE_PATH = 'tests/boid_runs'
 
 # these ones are how lymburn inits it's variables
 DEFAULTS = {
@@ -430,7 +430,7 @@ def save_run(data: dict, name: str | None = None, out_dir: str = "boid_runs",par
     )
     return path
 
-def organise_paths(paths:str):
+def find_npzs(paths:str):
     '''
     Takes some paths, of directories (in which it searches for npzs, or npz paths)
     :return: array of dictionaries containing the npz runs it found
@@ -446,7 +446,6 @@ def organise_paths(paths:str):
     datas =[load_run(f) for f in npzs]
 
     return datas
-
 
 def load_run(path: str) -> dict:
 
@@ -468,6 +467,29 @@ def load_run(path: str) -> dict:
             print(f"\tvalue for '{k}' is missing, features relating to this will not work thus.")
 
     return run_dict
+
+def find_dir(path:str,name:str = False,its=0):
+    '''
+    Docstring for find_or_make_dir
+    :return: tuple(save path, save name) savename will default to datetime if no option provided
+    '''
+    if its > 1: raise Exception(f'Could not find path {path}')
+
+    time_now = datetime.now().strftime('%d-%m-%Y-%H%M-%S')
+
+    if os.path.exists(path):
+        if os.path.isdir(path):
+            if name: return name, path
+            else:    return time_now, path
+        else:
+            print(f'{path} already exists as a file')
+            raise FileExistsError
+    else:
+        dirname = os.path.dirname(path)
+        name = os.path.basename(path)
+        return find_dir(dirname,name,1)
+        
+
 #----------------------------------------------------------------
 
 def TestSimulation(config_path):
@@ -514,7 +536,7 @@ def main(custom_args=None):
 
 
     if view:
-        datas = organise_paths(view)
+        datas = find_npzs(view)
         SimViewer(datas)
         return
     
@@ -529,28 +551,36 @@ def main(custom_args=None):
         else:
             params = load_ini(ini_path)
 
-        datas = [run_simulation(params) for _ in range(iterations)]
+        datas = []
+        for _ in trange(iterations):
+            datas.append(run_simulation(params))
 
         if save is not None:
-            if save == False:
-                save_name = datetime.now().strftime('%d-%m-%Y-%H%M-%S')
+            os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
+            if not save: 
+                save_name, save_path = find_dir(DEFAULT_SAVE_PATH)
             else:
-                save_name = args.save if isinstance(args.save, str) and args.save.strip() else None
-
+                save_name, save_path = find_dir(save)
             for i in range(iterations):
-                save_name+=f"_run_{i}"
-                saved_path = save_run(datas[i], save_name,params=params,config_title=save_name)
+                run_num = 0
+                save_name_iterated=save_name+f"{run_num}"
+
+                # make sure to give unique filename
+                while os.path.exists(f'{save_path}/{save_name_iterated}.npz'): 
+                    run_num+=1
+                    save_name_iterated=save_name+f"{run_num}"
+                saved_path = save_run(datas[i],name=save_name_iterated, out_dir=save_path,params=params,config_title=save_name)
             
             print(f"Saved run(s) to: {saved_path}")
 
         if runview:
-
             SimViewer(datas)
-    # If no args: show help
-    try:
-        parser.print_help()
-    except:
-        raise Exception('No arguments were given but parser help cant be printed')
+            return
+        elif runview is None:
+            try:
+                parser.print_help()
+            except:
+                raise Exception('No arguments were given but parser help cant be printed')
 
 if __name__ == "__main__":
     main()
