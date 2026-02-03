@@ -13,12 +13,14 @@ from viewer import View as SimViewer
 from scipy.spatial import cKDTree
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,              help="Run a new simulation given a .ini file path of parameters.")
+parser.add_argument('--run-view',     '-rv',    type=str,   nargs='?', const=True,                help="Like -r but automatically begins viewing the simulation(s).")
+parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                 help="Use with run or runview to perform multiple simulations.")
+parser.add_argument('--seed',                   type=int,   nargs='?', const=1,                         help="Give a random seed to produce identical runs. Default seed is '1'.")
 
-parser.add_argument('--run','-r', help="Run a new simulation given a .ini file path of parameters.", nargs='?', const=True)
-parser.add_argument('--runandview','-rv', help="Like -r but automatically begins viewing the", nargs='?', const=True)
-parser.add_argument('--generate-params','-g',type=str, help="generate an empty .ini with default parameters", nargs='?', const='.')
-parser.add_argument('--view','-v',type=str,nargs='+', help="View a previous simulation, given the file path of a valid .npz")
-parser.add_argument('--save','-s', help="Save the run as an .npz, given a string name (will default to date time)", nargs='?', const=True)
+parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='.',               help="generate an empty .ini with default parameters.")
+parser.add_argument('--view',           '-v',   type=str,   nargs='+',                          help="View a previous simulation, given the file path of a valid '.npz'.")
+parser.add_argument('--save',           '-s',               nargs='?', const=True,              help="Save the run as an '.npz', given a string name (will default to date time).")
 
 # Optimisation focused definition
 EMPTY_0x2 = np.empty((0, 2))
@@ -229,17 +231,16 @@ def generate_lorenz(time_steps, sample_rate, x_init, y_init, z_init):
     return np.column_stack((rescaled_x_coords,rescaled_y_coords))
 
 def generate_flock(flock_size,lim,random_velocity=False):
-    x = np.random.uniform(lim[0], lim[1], size=(flock_size, 2))
+    #x = np.random.uniform(lim[0], lim[1], size=(flock_size, 2))
+    x = lim[0] + (lim[1] - lim[0]) * np.random.beta(2, 2, size=(flock_size, 2))
+
     if random_velocity: 
         v=np.random.rand(flock_size,2)
     else: 
         v = np.zeros((flock_size,2),dtype=float)
 
-    # dictionary mapping the number tag of each boid to a bit array of its near neighbours
-    n = {i:[0] * flock_size for i in range(flock_size)}
-
     # returns positions, velocities, neighbour data
-    return x, v, n
+    return x, v
 
 def evolve(t,positions,velocities,prior_lorenz_x):
     '''
@@ -266,7 +267,7 @@ def run_simulation(params: dict):
 
     lorenz = generate_lorenz(TIME_STEPS, L_SAMPLING_RATE, X_LORENZ, Y_LORENZ, Z_LORENZ)
 
-    p, v, _ = generate_flock(BOID_COUNT, SPAWN_BOUNDS, RANDOM_VELOCITY)
+    p, v = generate_flock(BOID_COUNT, SPAWN_BOUNDS, RANDOM_VELOCITY)
     positions.append(p)
     velocities.append(v)
 
@@ -286,7 +287,7 @@ def run_simulation(params: dict):
 
 
 #----------------------------------------------------------------
-# functions below were initially written by CHATGPT, but reviewed and modified by myself 
+# some functions below were initially written by CHATGPT, but reviewed and modified by myself 
 def load_ini(path: str) -> dict:
     cfg = configparser.ConfigParser()
     cfg.read(path)
@@ -295,7 +296,11 @@ def load_ini(path: str) -> dict:
     def get(section, key, cast):
         if cfg.has_option(section, key):
             return cast(cfg.get(section, key))
-        return DEFAULTS[key]
+        
+        #return DEFAULTS[key]
+        else:
+            raise Exception(f'Config {path} is missing a key:value for {section} {key}\n\tPlease update the .ini to use this config file')
+        
 
     params = {}
 
@@ -425,7 +430,26 @@ def save_run(data: dict, name: str | None = None, out_dir: str = "boid_runs",par
     )
     return path
 
+def organise_paths(paths:str):
+    '''
+    Takes some paths, of directories (in which it searches for npzs, or npz paths)
+    :return: array of dictionaries containing the npz runs it found
+    '''
+    npzs = []
+    for p in paths:
+        if os.path.isdir(p):
+            sub_files = os.scandir(p)
+            npzs.extend([f.path for f in sub_files if '.npz' in f.name])
+        else:
+            npzs.append(p)
+
+    datas =[load_run(f) for f in npzs]
+
+    return datas
+
+
 def load_run(path: str) -> dict:
+
     z = np.load(path, allow_pickle=True)
     run_dict = {}
     run_dict["positions"] = z.get("positions"),
@@ -446,51 +470,87 @@ def load_run(path: str) -> dict:
     return run_dict
 #----------------------------------------------------------------
 
-def main():
-    args = parser.parse_args()
-    print(args)
+def TestSimulation(config_path):
+    # find ini file
+    # apply params
+    # return the associated arrays positions instead of saving
+    params = load_ini(config_path)
+    return run_simulation(params)
 
-    # gen empty ini
+def main(custom_args=None):
+    #below accounts for main being called by other scripts, where custom args is a custom object
+    if parser is None:
+        try:
+            args = custom_args
+            args.view
+        except:
+            raise Exception("Invalid custom args. Must be 'object-like' and have accessable paramaters. Unused parameters must be set to None")
+    else:
+        args = parser.parse_args()
+
+    # if generating params, early return because this is an iscolated use case
     if args.generate_params:
+        print(f'Generating new parameters file at {out_path}')
         out_path = "default_params.ini"
         write_default_ini(out_path)
-        print(f"Wrote default ini to: {out_path}")
         return
 
-    # rerun / view an existing run
-    if args.view:
-        filenames = args.view
-        filenames = np.array(filenames).flatten()
-        datas =[load_run(f) for f in filenames]
+
+    view = args.view # view some number of previous runs (.nz) 
+    run = args.run # do a run returning the result
+    runview = args.run_view # do a run returning the result and displaying 
+    iterations = args.iterations # Called replicas because they have different start conditions
+    seed = args.seed
+    save = args.save # save a run (given run or runview)
+
+    print(f"run: {run}\nrunview: {runview}\niterations {iterations}\nseed: {seed}\nsave: {save}")
+
+    # setting the seed
+    if isinstance(seed,int): 
+        np.random.seed(seed)
+        print(f"Using custom np.random seed: {seed}")
+    else: 
+        np.random.seed(1)
+
+
+    if view:
+        datas = organise_paths(view)
         SimViewer(datas)
         return
+    
+    elif run or runview:
+        # loading parameters
+        if run: ini_path = run
+        elif runview: ini_path = runview
 
-    # run a new simulation from ini
-    if args.run or args.runandview:
-        ini_path = args.run if args.run else args.runandview
         if not isinstance(ini_path,str) or ini_path is None:
             print("---USING DEFAULT PARAMETERS---")
             params = DEFAULTS
         else:
             params = load_ini(ini_path)
-        data = run_simulation(params)
 
-        saved_path = None
-        if args.save is not None:
-            if args.save == False:
+        datas = [run_simulation(params) for _ in range(iterations)]
+
+        if save is not None:
+            if save == False:
                 save_name = datetime.now().strftime('%d-%m-%Y-%H%M-%S')
             else:
                 save_name = args.save if isinstance(args.save, str) and args.save.strip() else None
 
-            saved_path = save_run(data, save_name,params=params,config_title=save_name)
-            print(f"Saved run to: {saved_path}")
+            for i in range(iterations):
+                save_name+=f"_run_{i}"
+                saved_path = save_run(datas[i], save_name,params=params,config_title=save_name)
+            
+            print(f"Saved run(s) to: {saved_path}")
 
-        if args.runandview:
-            SimViewer([data])
-        return
+        if runview:
 
+            SimViewer(datas)
     # If no args: show help
-    parser.print_help()
+    try:
+        parser.print_help()
+    except:
+        raise Exception('No arguments were given but parser help cant be printed')
 
 if __name__ == "__main__":
     main()

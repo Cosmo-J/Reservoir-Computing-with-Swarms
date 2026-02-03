@@ -1,5 +1,6 @@
 gifs
 images
 __pycache__
-boid_runs/*
+tests/**/*
+
 .DS_Store
