@@ -500,6 +500,8 @@ def TestSimulation(config_path):
     return run_simulation(params)
 
 def main(custom_args=None):
+    os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
+
     #below accounts for main being called by other scripts, where custom args is a custom object
     if parser is None:
         try:
@@ -551,17 +553,17 @@ def main(custom_args=None):
         else:
             params = load_ini(ini_path)
 
-        datas = []
-        for _ in trange(iterations):
-            datas.append(run_simulation(params))
-
         if save is not None:
-            os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
             if not save: 
                 save_name, save_path = find_dir(DEFAULT_SAVE_PATH)
             else:
                 save_name, save_path = find_dir(save)
-            for i in range(iterations):
+
+        datas = []
+        for i in trange(iterations):
+            datas.append(run_simulation(params))
+
+            if save is not None:
                 run_num = 0
                 save_name_iterated=save_name+f"{run_num}"
 
@@ -571,7 +573,7 @@ def main(custom_args=None):
                     save_name_iterated=save_name+f"{run_num}"
                 saved_path = save_run(datas[i],name=save_name_iterated, out_dir=save_path,params=params,config_title=save_name)
             
-            print(f"Saved run(s) to: {saved_path}")
+                print(f"Saved run(s) to: {saved_path}")
 
         if runview:
             SimViewer(datas)
