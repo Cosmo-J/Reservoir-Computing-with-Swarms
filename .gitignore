@@ -3,4 +3,6 @@ images
 __pycache__
 tests/**/*
 
+/**/**/**/.DS_Store
+/**/.DS_Store
 .DS_Store

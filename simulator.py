@@ -3,6 +3,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from types import SimpleNamespace as sn
 from tqdm import trange
+from tqdm import tqdm
 from copy import deepcopy
 from datetime import datetime
 from mpl_toolkits.mplot3d import Axes3D
@@ -12,6 +13,8 @@ import configparser
 from viewer import View as SimViewer
 from scipy.spatial import cKDTree
 
+from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,  help="Run a new simulation given a .ini file path of parameters.")
 parser.add_argument('--run-view',     '-rv',    type=str,   nargs='?', const=True,  help="Like -r but automatically begins viewing the simulation(s).")
@@ -20,6 +23,7 @@ parser.add_argument('--seed',                   type=int,   nargs='?', const=1, 
 parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='.',   help="generate an empty .ini with default parameters.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='+',              help="View a previous simulation, given the file path of a valid '.npz'.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
+parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
 
 # Optimisation focused definition
 EMPTY_0x2 = np.empty((0, 2))
@@ -259,9 +263,7 @@ def evolve(t,positions,velocities,prior_lorenz_x):
 
     return new_v,new_x
 
-def run_simulation(params: dict):
-    apply_params(params)
-
+def run_simulation():
     positions = []
     velocities = []
 
@@ -271,7 +273,7 @@ def run_simulation(params: dict):
     positions.append(p)
     velocities.append(v)
 
-    for t in trange(TIME_STEPS - 1):
+    for t in range(TIME_STEPS - 1):
         new_v, new_x = evolve(t,positions, velocities, lorenz[t])
         positions.append(new_x)
         velocities.append(new_v)
@@ -501,7 +503,6 @@ def TestSimulation(config_path):
 
 def main(custom_args=None):
     os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
-
     #below accounts for main being called by other scripts, where custom args is a custom object
     if parser is None:
         try:
@@ -526,6 +527,7 @@ def main(custom_args=None):
     iterations = args.iterations # Called replicas because they have different start conditions
     seed = args.seed
     save = args.save # save a run (given run or runview)
+    multithread = args.multithread
 
     print(f"run: {run}\nrunview: {runview}\niterations {iterations}\nseed: {seed}\nsave: {save}")
 
@@ -547,11 +549,14 @@ def main(custom_args=None):
         if run: ini_path = run
         elif runview: ini_path = runview
 
+
         if not isinstance(ini_path,str) or ini_path is None:
             print("---USING DEFAULT PARAMETERS---")
             params = DEFAULTS
         else:
             params = load_ini(ini_path)
+        
+        apply_params(params)
 
         if save is not None:
             if not save: 
@@ -559,30 +564,55 @@ def main(custom_args=None):
             else:
                 save_name, save_path = find_dir(save)
 
-        datas = []
-        for i in trange(iterations):
-            datas.append(run_simulation(params))
+            max_number = 0
+            name_it = save_name
 
-            if save is not None:
-                run_num = 0
-                save_name_iterated=save_name+f"{run_num}"
+            #TODO known bug occurs if e.g. file10 file13, code will assume file10 is the max
+            while os.path.exists(f'{save_path}/{name_it+str(max_number)}.npz'):
+                max_number+=1
+                
+            print(f'MAX IT FOUND WITH NAME: {name_it+str(max_number-1)}')
 
-                # make sure to give unique filename
-                while os.path.exists(f'{save_path}/{save_name_iterated}.npz'): 
-                    run_num+=1
+    
+
+        if multithread:
+            datas = [None] * iterations
+            executor = TPE(max_workers=4)
+            futures = {executor.submit(run_simulation):i for i in range(iterations)}
+            for f in tqdm(as_completed(futures),total=len(futures)):
+                i = futures[f]
+
+                result = f.result()
+                datas[i] = result
+
+                save_name_iterated = save_name + f'{max_number+i}'
+
+                if save is not None:
+                    save_run(result,name=save_name_iterated,out_dir=save_path,params=params,config_title=ini_path)  
+            executor.shutdown()
+        else: 
+            datas=[]
+            for i in trange(iterations):
+                datas.append(run_simulation())
+
+                if save is not None:
+                    run_num = 0
                     save_name_iterated=save_name+f"{run_num}"
-                saved_path = save_run(datas[i],name=save_name_iterated, out_dir=save_path,params=params,config_title=save_name)
-            
-                print(f"Saved run(s) to: {saved_path}")
+
+                    # make sure to give unique filename
+                    while os.path.exists(f'{save_path}/{save_name_iterated}.npz'): 
+                        run_num+=1
+                        save_name_iterated=save_name+f"{run_num}"
+                    saved_path = save_run(datas[i],name=save_name_iterated, out_dir=save_path,params=params,config_title=save_name)
+                
+                    print(f"Saved run(s) to: {saved_path}")
 
         if runview:
-            SimViewer(datas)
-            return
-        elif runview is None:
-            try:
-                parser.print_help()
-            except:
-                raise Exception('No arguments were given but parser help cant be printed')
+            SimViewer(datas)        
+        
+        return datas
+
+    raise Exception('No arguments were given but parser help cant be printed')
 
 if __name__ == "__main__":
     main()
