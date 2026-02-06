@@ -12,6 +12,7 @@ import os
 import configparser
 from viewer import View as SimViewer
 from scipy.spatial import cKDTree
+import threading
 
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
@@ -23,7 +24,7 @@ parser.add_argument('--seed',                   type=int,   nargs='?', const=1, 
 parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='.',   help="generate an empty .ini with default parameters.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='+',              help="View a previous simulation, given the file path of a valid '.npz'.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
-parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
+parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="set true ")
 
 # Optimisation focused definition
 EMPTY_0x2 = np.empty((0, 2))
@@ -273,7 +274,16 @@ def run_simulation():
     positions.append(p)
     velocities.append(v)
 
-    for t in range(TIME_STEPS - 1):
+
+    # below is a very excentric way of getting the number from the end of the thread name seen <Thread(ThreadPoolExecutor-0_0, started 6119583744)> (which is what current_thread() returns in a MT scenario)
+    # otherwise rely on the failure to make the letter d an int to state that its a single threading scenario and thread indent should be 0 LOL
+    # not too worried about the bad practise here considering the code is purely for aesthetics
+    try: 
+        thread_indent = int(threading.current_thread().name[-1])+1
+    except:
+        thread_indent=0
+
+    for t in trange(TIME_STEPS - 1,desc=f"Thread: {threading.current_thread().name}",position=thread_indent,leave=False):
         new_v, new_x = evolve(t,positions, velocities, lorenz[t])
         positions.append(new_x)
         velocities.append(new_v)
@@ -444,13 +454,12 @@ def find_npzs(paths:str):
             npzs.extend([f.path for f in sub_files if '.npz' in f.name])
         else:
             npzs.append(p)
-
     datas =[load_run(f) for f in npzs]
+    print(f'Loaded {len(datas)} run(s)')
 
     return datas
 
 def load_run(path: str) -> dict:
-
     z = np.load(path, allow_pickle=True)
     run_dict = {}
     run_dict["positions"] = z.get("positions"),
@@ -461,7 +470,7 @@ def load_run(path: str) -> dict:
     run_dict["bounds"] = z.get("bounds"),
     run_dict["config_title"] = z.get("config_title")
     
-    print(f"Checking if features of '{path}' are up to date...")
+    #print(f"Checking if features of '{path}' are up to date...")
     for k,v in run_dict.items():
         if type(v) is tuple:
             run_dict[k] = v[0]
@@ -579,20 +588,20 @@ def main(custom_args=None):
             datas = [None] * iterations
             executor = TPE(max_workers=4)
             futures = {executor.submit(run_simulation):i for i in range(iterations)}
-            for f in tqdm(as_completed(futures),total=len(futures)):
+            for f in tqdm(as_completed(futures),total=len(futures),desc='Iterations',position=0):
                 i = futures[f]
 
                 result = f.result()
                 datas[i] = result
 
-                save_name_iterated = save_name + f'{max_number+i}'
-
                 if save is not None:
+                    save_name_iterated = save_name + f'{max_number+i}'
                     save_run(result,name=save_name_iterated,out_dir=save_path,params=params,config_title=ini_path)  
+
             executor.shutdown()
         else: 
             datas=[]
-            for i in trange(iterations):
+            for i in trange(iterations,desc='Iterations',position=0):
                 datas.append(run_simulation())
 
                 if save is not None:
