@@ -540,6 +540,10 @@ def main(custom_args=None):
 
     print(f"run: {run}\nrunview: {runview}\niterations {iterations}\nseed: {seed}\nsave: {save}")
 
+    if (save is None):
+        save = input('########## WARNING ##########\nNo save path, run will not be saved (dry run) abort CTRL-C or input savepath now:')
+
+
     # setting the seed
     if isinstance(seed,int): 
         np.random.seed(seed)
