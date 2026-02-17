@@ -16,6 +16,8 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,  help="Run a new simulation given a .ini file path of parameters.")
 parser.add_argument('--run-view',     '-rv',    type=str,   nargs='?', const=True,  help="Like -r but automatically begins viewing the simulation(s).")

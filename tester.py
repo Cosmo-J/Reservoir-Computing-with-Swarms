@@ -5,8 +5,61 @@ from simulator import find_npzs
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
 
+class PropertyAnalysis:
+    '''
+    Used to analysise the properties of a reservoir
+    '''
+
+    def __init__(self,simulations):
+        self.simulations = simulations
+        self.replicas = self.get_replica_matricies()
+
+    def get_replica_matricies(self):
+        R = []
+        for s in self.simulations:
+            x = s['positions']
+            v = s['velocities']
+            r_i = np.array(np.concatenate([x,v],axis=2))
+            r_i = r_i.reshape(r_i.shape[0],r_i.shape[1]*r_i.shape[2])
+            R.append(r_i)
+            
+        return np.array(R)
 
 
+    def consistency_correlation(self):
+        '''
+        Docstring for consistency_correlation
+        
+        :param self: Description
+        '''
+        numer = lambda s: np.mean(s,axis=0)**2
+        denom = lambda s,n: np.mean((s+n)**2,axis=0)
+
+        #TODO wtf is this sorry future cosmo you gotta deal with this shit. Still the same confusion now of like is s an average given a bunch of replicas, and then N is for any specific given replica?
+        # etc etc
+
+        cc_r = []
+        for r in self.replicas:
+            r_i_numer = numer()
+
+    def simulation_noise(self):
+        '''
+        Find the noise of each simulation, can sort of be thought of as each simulations standard deviation
+        x(t) = s(t) + n(t) where x is a reservoir state, s(t) is the signal, and n(t) is the noise
+
+        :returns: the noise of each replica at a given t [R,T,S] (replicas, time, state)
+        '''
+        n = self.replicas-self.reservoir_signal()
+        return n
+
+    def reservoir_signal(self):
+        '''
+        Average or 'most likely' state for the reservoir at a given time t
+        
+        :self.states: [R,T,S] where R is a replica, T is time, S is state. we can find the average state of a reservoir given 
+        '''
+        s = np.mean(self.replicas,axis=0)
+        return s
 
 class KernelReservoir:
     def __init__(self,kernel_number,training,testing):
@@ -254,3 +307,8 @@ kr = KernelReservoir(200,datas[0],datas[1])
 
 kr.get_prediction(1)
 kr.plot_results()
+
+#path = ['tests/super_long_no_pred/']
+#datas = find_npzs(path)
+#pa = PropertyAnalysis(datas)
+#pa.simulation_noise()

@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("input",nargs='+', help='path to .npz simulation runs')
 parser.add_argument("--overlay", "-o", action="store_true", help="Overlay multiple simulations on one axis instead of besides eachother.")
 
-DARK_MODE = False
+DARK_MODE = True
 ZOOM = 0.1
 BOID_SIZE = 50*ZOOM
 PRED_SIZE = 100*ZOOM
