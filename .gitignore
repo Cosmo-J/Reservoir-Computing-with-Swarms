@@ -7,3 +7,6 @@ tests/**/*
 /**/.DS_Store
 .DS_Store
 dfwm.txt
+/.vscode
+
+/setup_alias.sh
