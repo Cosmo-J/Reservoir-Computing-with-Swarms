@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn.linear_model import Ridge
 from tqdm import trange
-from simulator import find_npzs
+from Archive.simulator import find_npzs
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
 
@@ -25,18 +25,11 @@ class PropertyAnalysis:
             
         return np.array(R)
 
-
     def consistency_correlation(self):
         '''
-        Docstring for consistency_correlation
-        
-        :param self: Description
         '''
-        numer = lambda s: np.mean(s,axis=0)**2
+        numer = lambda s: np.mean(s**2,axis=0)
         denom = lambda s,n: np.mean((s+n)**2,axis=0)
-
-        #TODO wtf is this sorry future cosmo you gotta deal with this shit. Still the same confusion now of like is s an average given a bunch of replicas, and then N is for any specific given replica?
-        # etc etc
 
         cc_r = []
         for r in self.replicas:
@@ -301,12 +294,7 @@ class KernelReservoir:
         return numer/denom
     
 
-path = ['tests/super_long/']
-datas = find_npzs(path)
-kr = KernelReservoir(200,datas[0],datas[1])
 
-kr.get_prediction(1)
-kr.plot_results()
 
 #path = ['tests/super_long_no_pred/']
 #datas = find_npzs(path)
