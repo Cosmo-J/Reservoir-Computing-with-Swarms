@@ -11,6 +11,9 @@ from viewer import View as SimViewer
 from scipy.spatial import KDTree
 import threading
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
+from viewer import BoidVisualizer
+
+import matplotlib.pyplot as plt
 
 
 parser = argparse.ArgumentParser()
@@ -22,12 +25,13 @@ parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=Tru
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
 parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="set true ")
 
+
 # Optimisation focused definition
 EMPTY_0x2 = np.empty((0, 2))
 EPS =1e-12 # used for avoiding divide by 0
 DEFAULT_SAVE_PATH = 'tests/boid_runs'
 PARAMS = {}
-COORDINATE_SYSTEMS = ['flat','torus']
+SPAWN_TO_SIM_SIZE_MULTIPLIER = 10
 
 
 class SimSaverLoader:
@@ -87,7 +91,7 @@ class SimSaverLoader:
             raise FileNotFoundError(f"Directory {path} doesn't exist or cant be found.")
 
     @staticmethod
-    def find_npzs(paths:list):
+    def find_npzs1(paths:list):
         '''
         Takes some paths, of directories (in which it searches for npzs, or npz paths)
         :return: array of dictionaries containing the npz runs it found
@@ -100,6 +104,28 @@ class SimSaverLoader:
             else:
                 npzs.append(p)
         datas =[SimSaverLoader.load_run(f) for f in npzs]
+        print(f'Loaded {len(datas)} run(s)')
+
+        return datas
+
+    @staticmethod
+    def find_npzs(paths: list):
+        '''
+        Takes some paths, of directories (in which it searches for npzs, or npz paths)
+        :return: array of dictionaries containing the npz runs it found
+        '''
+        if isinstance(paths, str):
+            paths = [paths]
+            
+        npzs = []
+        for p in paths:
+            if os.path.isdir(p):
+                sub_files = os.scandir(p)
+                npzs.extend([f.path for f in sub_files if f.name.endswith('.npz')])
+            else:
+                npzs.append(p)
+        
+        datas = [SimSaverLoader.load_run(f) for f in npzs]
         print(f'Loaded {len(datas)} run(s)')
 
         return datas
@@ -136,18 +162,19 @@ class SimParams:
                     "BOID_COUNT": 200,
                     "SPAWN_MIN": -1.0,
                     "SPAWN_MAX": 1.0,
-                    "RANDOM_VELOCITY": False
+                    "RANDOM_VELOCITY": False,
+                    "SIM_WIDTH": 10
                 },
 
             # force constants
             "forces":
                 {
                     "K_SPEED" : 10.0,
-                    "K_REPULSION" : 1,
+                    "K_REPULSION" : 1.0,
                     "K_ALIGNMENT" : 0.1,
                     "K_HOMING" : 2.0,
                     "K_FRICTION" : 20.0,
-                    "K_PREDATOR"  : 100
+                    "K_PREDATOR"  : 100.0
                 },
 
             # sigmoidal function
@@ -160,9 +187,10 @@ class SimParams:
             # neighbour radii
             "radii":
                 {
-                    "RAD_ALIGNMENT" : 1,
-                    "RAD_REPULSION" : 1,
-                    "RAD_PREDATOR" : 1
+                    "RAD_ALIGNMENT" : 1.0,
+                    "RAD_REPULSION" : 1.0,
+                    "RAD_HOMING" : 1.0,
+                    "RAD_PREDATOR" : 1.0
                 },
 
             # Lorenz conditions
@@ -223,8 +251,12 @@ class SimParams:
             cfg.write(f)
 
 class BoidSimulator:
-    def __init__(self,coordinate_system='flat'):
-        if coordinate_system.lower().strip() in COORDINATE_SYSTEMS:
+
+    def __init__(self,coordinate_system='torus'):
+        self.COORDINATE_SYSTEMS = ['flat','torus']
+
+
+        if coordinate_system.lower().strip() in self.COORDINATE_SYSTEMS:
             self.coord_system = coordinate_system
         else:
             raise KeyError(f'Coordinate system "{coordinate_system}" is not a valid option:\n\t{COORDINATE_SYSTEMS}')
@@ -254,11 +286,6 @@ class BoidSimulator:
             np.random.seed(1)
         
 ## Forces
-    def __torus_distance(self, a, b):
-        delta = a - b
-        return delta - np.array(self.sim_size) * np.round(delta / np.array(self.sim_size))
-    
-
     def __repulsion_force(self,boid,neis_x):
         """ 
             boid is an np.array(2) [x,y] of a given boid
@@ -266,12 +293,11 @@ class BoidSimulator:
         """
         if len(neis_x)==0: return np.zeros(2)
 
-        if self.coord_system=='flat':
-            d = boid - neis_x
-        elif self.coord_system=='torus':
-            d = self.__torus_distance(boid,neis_x)
-        denom = (d[:,0]**2 + d[:,1]**2) + EPS
-        return (d / denom[:,None]).sum(axis=0)
+        dist = boid - neis_x
+
+        denom = (dist[:,0]**2 + dist[:,1]**2) + EPS
+
+        return (dist / denom[:,None]).sum(axis=0)
 
     def __alignment_force(self,boid_v,neis_v):
         """boid is an np.array(2) [x,y] of a given boid's velocity\n neighoburs is an np.array(2,n) where n is the number of neighbours, and gives the velocities of all the neighbours"""
@@ -280,11 +306,14 @@ class BoidSimulator:
             force+= n - boid_v
         return force
 
-    def __homing_force(self,boid,home=np.array([0.0,0.0])):
+    def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
         if self.coord_system=='torus':
-            return self.__torus_distance(home,boid)
-        else:
-            return home-boid
+            if len(neis_x)==0:
+                return boid
+            mean = np.mean(neis_x,axis=0)
+            return mean
+
+        return home-boid
 
     def __friction_force(self,boid_v):
         speed = np.hypot(boid_v[0],boid_v[1])
@@ -292,27 +321,23 @@ class BoidSimulator:
 
     def __predator_force(self,boid_x,pred_x):
         if pred_x is None: return np.array([0.0,0.0])
+        d= np.linalg.norm(boid_x - pred_x)
 
-        if self.coord_system=='torus':
-            numer = self.__torus_distance(boid_x,pred_x)
-        elif self.coord_system=='flat':
-            numer = boid_x - pred_x
-
-        d = np.linalg.norm(numer)
-
+        
         # this 'if else' is the heaviside function
         if(d<=self.PARAMS()['RAD_PREDATOR']):
             denom = d**2
+            numer = boid_x-pred_x
             return (numer/denom+EPS)
         else:
             return np.array([0.0,0.0])
 
-    def __total_force(self,boid_x,boid_v,a_neighbours,r_neighbours,pred_x=None):
-    #           |-coefficent-----------------|-force---------------|-force-params---------|
+    def __total_force(self, boid_x, boid_v, a_neighbours, r_neighbours, h_neighbours, pred_x=None):
+    #           |-coefficent-----------------|-force--------------------|-force-params---------|
         force = ((self.PARAMS()['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
                 (self.PARAMS()['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
-                (self.PARAMS()['K_FRICTION']  *  self.__friction_force  (boid_v)) +
-                (self.PARAMS()['K_HOMING']    *  self.__homing_force    (boid_x)) +
+                (self.PARAMS()['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
+                (self.PARAMS()['K_FRICTION']  *  self.__friction_force  (boid_v))              +
                 (self.PARAMS()['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x) ))       
 
         # sigmoidal function
@@ -328,18 +353,30 @@ class BoidSimulator:
             tree = KDTree(tree_points)
 
         elif self.coord_system == 'torus':
-            tree_points = self.__flat_to_torus(boid_xs)
-            tree = KDTree(tree_points, boxsize=self.sim_size)
+            tree_points = self.__lorenz_wrap(boid_xs)
+            tree = KDTree(tree_points, boxsize=self.PARAMS()['SIM_WIDTH'])
             
         align_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_ALIGNMENT'])
-        repulsion_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_REPULSION'])
+        repul_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_REPULSION'])
+        homing_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_HOMING'])
 
+        # this is iterating through each boid and applying its force
         for i, (x,v) in enumerate(zip(boid_xs,boid_vs)):
-            a_idx = [j for j in align_lists[i] if j != i]
-            r_idx = [j for j in repulsion_lists[i] if j != i]
-            a_neis_v = boid_vs[a_idx] if a_idx else EMPTY_0x2
-            r_neis_x = boid_xs[r_idx] if r_idx else EMPTY_0x2
-            forces[i] = self.__total_force(x,v,a_neis_v,r_neis_x,pred_x)
+            # remove self from the ids in the neighbour lists
+            align_lists[i].remove(i)
+            repul_lists[i].remove(i)
+            homing_lists[i].remove(i)
+
+            a_neis_v = boid_vs[align_lists[i]]
+            r_neis_x = boid_xs[repul_lists[i]]
+            h_neis_x = boid_xs[homing_lists[i]]
+
+            forces[i] = self.__total_force( boid_x = x,
+                                            boid_v=v,
+                                            a_neighbours=a_neis_v,
+                                            r_neighbours=r_neis_x,
+                                            h_neighbours=h_neis_x,
+                                            pred_x=pred_x)
 
 
         return forces
@@ -353,7 +390,6 @@ class BoidSimulator:
 
     def __generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
         rescale = lambda axis: 2 * (axis - np.mean(axis)) / np.std(axis)
-
         lorenz_segment = time_steps*sample_rate
 
         soln = solve_ivp(self.__lorenz_equations, t_span=(0,lorenz_segment) ,y0=(x_init,y_init,z_init) ,dense_output=True)
@@ -362,11 +398,21 @@ class BoidSimulator:
 
         rescaled_x_coords = rescale(coords[:, 0])
         rescaled_y_coords = rescale(coords[:, 1])
-        return np.column_stack((rescaled_x_coords,rescaled_y_coords))
+        
+        lorenz_series = np.column_stack((rescaled_x_coords,rescaled_y_coords))
 
-    def __generate_flock(self,flock_size,lim,random_velocity=False):
-        #x = np.random.uniform(lim[0], lim[1], size=(flock_size, 2))
-        x = lim[0] + (lim[1] - lim[0]) * np.random.beta(2, 2, size=(flock_size, 2))
+        return lorenz_series
+        
+    def __generate_flock(self,flock_size,spawn_bounds,random_velocity=False):
+        #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
+        spawn_min = min(spawn_bounds)
+        spawn_max = max(spawn_bounds)
+        spawn_width = np.abs(spawn_max-spawn_min)
+
+        if self.coord_system=='flat':
+            x = spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
+        elif self.coord_system=='torus':
+            x = self.PARAMS()['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
 
         if random_velocity: 
             v=np.random.rand(flock_size,2)
@@ -376,9 +422,14 @@ class BoidSimulator:
         # returns positions, velocities, neighbour data
         return x, v
 
-    def __flat_to_torus(self,positions):
-        return (positions + self.sim_size[0]) % np.array(self.sim_size)
-    
+    def __lorenz_wrap(self,positions):
+        '''
+            assumes to take same positions in shape (n,2) (where n is the number of things with a position)
+        '''
+        #python modulo wraps negative numbers in the way one expects
+        wrapped = positions%self.PARAMS()['SIM_WIDTH']
+        return wrapped
+
     def __physics_step(self,t,positions,velocities,prior_lorenz_x):
         '''
         the priors are the given parameter at t
@@ -403,16 +454,23 @@ class BoidSimulator:
         positions = []
         velocities = []
 
-        lorenz = self.__generate_lorenz(self.PARAMS()['TIME_STEPS'], self.PARAMS()['L_SAMPLING_RATE'], self.PARAMS()['X_LORENZ'], self.PARAMS()['Y_LORENZ'], self.PARAMS()['Z_LORENZ'])
-
-        #nts repeatedly dry running the oop version to find and work through bugs, currently trying to fix spawnbounds which was originally 'tupliised' in the get params in the original simulator fuckers
         self.spawn_bounds = (self.PARAMS()['SPAWN_MIN'],self.PARAMS()['SPAWN_MAX'])
-        WH = (self.PARAMS()['SPAWN_MAX'] - self.PARAMS()['SPAWN_MIN']) * 10
-        self.sim_size = (WH,WH)
 
+        lorenz = self.__generate_lorenz(self.PARAMS()['TIME_STEPS'], self.PARAMS()['L_SAMPLING_RATE'], self.PARAMS()['X_LORENZ'], self.PARAMS()['Y_LORENZ'], self.PARAMS()['Z_LORENZ'])
         p, v = self.__generate_flock(self.PARAMS()['BOID_COUNT'], self.spawn_bounds, self.PARAMS()['RANDOM_VELOCITY'])
+
+        if self.coord_system=='torus':
+            p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
+
+            #1. Center lorenz around a center where 
+            lorenz = lorenz+self.PARAMS()['SIM_WIDTH']/2
+            #2. Wrap the recentered lorenz
+            lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
+        
         positions.append(p)
         velocities.append(v)
+
+
 
         """below is a very excentric way of getting the number from the end of the thread name seen <Thread(ThreadPoolExecutor-0_0, started 6119583744)> (which is what current_thread() returns in a MT scenario)
         otherwise rely on the failure to make the letter d an int to state that its a single threading scenario and thread indent should be 0 LOL
@@ -424,15 +482,14 @@ class BoidSimulator:
 
         for t in trange(self.PARAMS()['TIME_STEPS'] - 1,desc=f"Thread: {threading.current_thread().name}",position=thread_indent,leave=False):
             new_v, new_x = self.__physics_step(t,positions, velocities, lorenz[t])
-            if self.coord_system == 'torus':
-                new_x = new_x % np.array(self.sim_size)
 
+            #wrap the new positions
+            if self.coord_system=='torus':
+                new_x = self.__lorenz_wrap(new_x)
+            
             positions.append(new_x)
             velocities.append(new_v)
 
-
-        if self.coord_system=='torus':
-            positions = np.array(positions)-self.sim_size[0]/2
 
         return {
             "positions": positions,
@@ -441,6 +498,8 @@ class BoidSimulator:
             "time_steps": self.PARAMS()['TIME_STEPS'],
             "boid_count": self.PARAMS()['BOID_COUNT'],
             "bounds": self.spawn_bounds,
+            "coord_type":self.coord_system,
+            "sim_width":self.PARAMS()['SIM_WIDTH']
         }
 
 def main(custom_args=None):
@@ -477,14 +536,15 @@ def main(custom_args=None):
     # Checks
     print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nmultithreading: {multithread}")
 
-    if not we_be_saving: 
+    if not we_be_saving and run: 
         input('########## WARNING ##########\nNo save path, run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
 
 
     #(1)
     if view and not run:
         datas = SaverLoader.find_npzs(view)
-        SimViewer(datas)
+        BoidVisualizer(datas, overlay=True)
+        plt.show()
         return 
 
     #(2)
@@ -516,7 +576,9 @@ def main(custom_args=None):
 
 
 
-        if view: SimViewer(datas)        
+        if view: 
+            BoidVisualizer(datas, overlay=True)
+            plt.show()       
         
         return datas
 
