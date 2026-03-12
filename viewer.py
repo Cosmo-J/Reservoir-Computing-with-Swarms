@@ -3,254 +3,184 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, Slider
 import argparse
+import os
 import sys
+from mpl_toolkits.mplot3d import Axes3D
 
-parser = argparse.ArgumentParser()
-parser.add_argument("input",nargs='+', help='path to .npz simulation runs')
-parser.add_argument("--overlay", "-o", action="store_true", help="Overlay multiple simulations on one axis instead of besides eachother.")
-
-DARK_MODE = True
+# --- Global Visual Constants ---
+DARK_MODE = False
 ZOOM = 0.1
 BOID_SIZE = 50*ZOOM
 PRED_SIZE = 100*ZOOM
-ARROW_SCALE = 1/(0.5*ZOOM)
-ARROW_WIDTH = 0.015 * ZOOM
+ARROW_SCALE = 20/(0.5*ZOOM)
+ARROW_WIDTH = 0.05 * ZOOM
 
-
-#TODO Add ability to overlay plots instead of side by side
-def View1(datas:list):
-    times = [d.get('time_steps') for d in datas]
-    if len(set(times)) > 1:
-        print(f"Times: {times}")
-        sys.tracebacklimit = 0
-        raise Exception('The given simulations have inequal time sets, therefore cannot be compared.')
-    else:
-        time_steps = times[0]
+class BoidVisualizer:
+    def __init__(self, datasets, overlay=False):
+        self.datasets = datasets
+        self.overlay = overlay
+        self.num_sims = len(datasets)
         
+        # Initial geometry state
+        self.is_torus = datasets[0].get('coord_type') == 'torus'
+        self.time_steps = len(datasets[0]['positions'])
+        
+        self.playing = False
+        self.frame = 0
+        self.speed = 33
+        
+        self.fig = plt.figure(figsize=(10, 8) if not overlay else (8, 9))
+        self.axs = []
+        self.artists = []
+        
+        self._init_layout()
+        self._init_ui()
+        self.draw_frame(0)
+        
+        self.ani = FuncAnimation(
+            self.fig, 
+            self.tick, 
+            interval=self.speed, 
+            cache_frame_data=False,
+            save_count=self.time_steps
+        )
+        self.fig._ani = self.ani 
 
-    if DARK_MODE: plt.style.use('dark_background')
+        if DARK_MODE:
+            plt.style.use('dark_background')
 
-    
+    def _init_layout(self):
+        """Clears the figure and re-initializes axes to prevent interaction artifacts."""
+        self.fig.clf() # Clear the entire figure to reset the backend state
+        self.axs = []
+        self.artists = []
+        
+        num_cols = 1 if self.overlay else self.num_sims
+        cmap = plt.get_cmap("tab10")
+        
+        for i in range(self.num_sims):
+            if self.overlay and i > 0:
+                ax = self.axs[0]
+            else:
+                proj = '3d' if self.is_torus else None
+                ax = self.fig.add_subplot(1, num_cols, i + 1, projection=proj)
+                if self.is_torus:
+                    ax.set_box_aspect([1, 1, 1])
+                    ax.axis('off')
+                else:
+                    ax.set_aspect("equal", adjustable="box")
+                self.axs.append(ax)
+            
+            color = cmap(i % cmap.N)
+            self.artists.append(self._create_artist(ax, self.datasets[i], color))
+        
+        # Because clf() wipes the figure, we must re-init the UI widgets
+        self._init_ui()
 
+    def _toggle_geometry(self, event):
+        self.is_torus = not self.is_torus
+        self._init_layout()
+        # Ensure we sync the slider back to our current frame after re-init
+        self.slider_time.set_val(self.frame)
+        self.draw_frame(self.frame)
+        self.fig.canvas.draw_idle()
 
-    fig, axs = plt.subplots(1, len(datas),figsize=(5 * len(datas), 5))
-    axs = np.atleast_1d(axs)
-    
-    artists = [GetArtist(ax,data) for ax, data in zip(axs,datas)]
-    
-    state = {"playing": False, "frame": 0, "speed":33}
-    plt.subplots_adjust(bottom=0.5)
-    
-    ax_time = fig.add_axes([0.15, 0.08, 0.7, 0.04])
-    playback_slider = Slider(ax=ax_time, label="t", valmin=0, valmax=time_steps - 1, valinit=0, valstep=1)
-
-    ax_speed = fig.add_axes([0.15, 0.2, 0.7, 0.04])
-    speed_slider = Slider(ax=ax_speed, label="s", valmin=0.01, valmax=60, valinit=33, valstep=0.01)
-
-    ax_btn = fig.add_axes([0.02, 0.06, 0.10, 0.08])
-    btn = Button(ax_btn, "Play")
-
-
-    def draw_frame(i: int):
-        i = int(np.clip(i, 0, time_steps - 1))
-        state["frame"] = i
-        for art, data, ax in zip(artists, datas, axs):
-            # get the position of each thing at a given time step
-            boids = data['positions'][i]
-            vel   = data['velocities'][i]
-            pred  = data['predator_positions'][i]
-
-            # update the artists scatter based on these timesteps
-            art['boids'].set_offsets(boids)
-            art['pred'].set_offsets(pred)
-            art['quiver'].set_offsets(boids)
-            art['quiver'].set_UVC(vel[:, 0], vel[:, 1])
-
-            ax.set_xlabel(f"frame {i+1}/{time_steps}")
-
-    def on_speed_scrub(val):
-        ms = int(val)
-        state["speed"] = ms
-        ani._interval = ms
-        ani.event_source.stop()
-        ani.event_source.interval = ms
-        ani.event_source.start()
-
-        fig.canvas.draw_idle()
-
-    def on_time_scrub(val):
-        state["playing"] = False
-        btn.label.set_text("Play")
-        draw_frame(int(val))
-        fig.canvas.draw_idle()
-
-    def on_button_clicked(_):
-        state["playing"] = not state["playing"]
-        btn.label.set_text("Pause" if state["playing"] else "Play")
-
-    def tick(_):
-        if state["playing"]:
-            nxt = (state["frame"] + 1) % time_steps
-            playback_slider.eventson = False
-            playback_slider.set_val(nxt)
-            playback_slider.eventson = True
-
-            draw_frame(nxt)
-    
-    playback_slider.on_changed(on_time_scrub)
-    speed_slider.on_changed(on_speed_scrub)
-
-    btn.on_clicked(on_button_clicked)
-
-    draw_frame(0)
-    ani = FuncAnimation(fig, tick, interval=state['speed'], blit=False,cache_frame_data=False)  # ~30 FPS
-    plt.show()
-
-
-def View(datas: list, overlay=True):
-    times = [d.get('time_steps') for d in datas]
-    if len(set(times)) > 1:
-        print(f"Times: {times}")
-        sys.tracebacklimit = 0
-        raise Exception('The given simulations have inequal time sets, therefore cannot be compared.')
-    time_steps = times[0]
-
-    if DARK_MODE:
-        plt.style.use('dark_background')
-
-    # --- choose axes layout ---
-    if overlay:
-        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-    else:
-        fig, ax = plt.subplots(1, len(datas), figsize=(5 * len(datas), 5))
-    
-    axs = np.array( [ax for _ in range (len(datas))] ).flatten()
-
-    cmap = plt.get_cmap("tab10")
-    colours = [cmap(i % cmap.N) for i in range(len(datas))]
-
-    artists = [GetArtist(ax, data, colour=c) for ax, data, c in zip(axs, datas, colours)]
-
-    state = {"playing": False, "frame": 0, "speed": 33}
-    plt.subplots_adjust(bottom=0.5)
-
-    ax_time = fig.add_axes([0.15, 0.08, 0.7, 0.04])
-    playback_slider = Slider(ax=ax_time, label="t", valmin=0, valmax=time_steps - 1, valinit=0, valstep=1)
-
-    ax_speed = fig.add_axes([0.15, 0.2, 0.7, 0.04])
-    speed_slider = Slider(ax=ax_speed, label="s", valmin=1, valmax=60, valinit=33, valstep=1)
-
-    ax_btn = fig.add_axes([0.02, 0.06, 0.10, 0.08])
-    btn = Button(ax_btn, "Play")
-
-    def draw_frame(i: int):
-        i = int(np.clip(i, 0, time_steps - 1))
-        state["frame"] = i
-
-        for art, data in zip(artists, datas):
-            boids = data['positions'][i]
-            vel   = data['velocities'][i]
-            pred  = data['predator_positions'][i]
-
-            art['boids'].set_offsets(boids)
-            art['pred'].set_offsets(pred)
-            art['quiver'].set_offsets(boids)
-            art['quiver'].set_UVC(vel[:, 0], vel[:, 1])
-
-        # label only once if overlay; otherwise each subplot already has its own
-        if overlay:
-            axs[0].set_xlabel(f"frame {i+1}/{time_steps}")
+    def _create_artist(self, ax, data, color):
+        config_title = data.get('config_title', ["Simulation"])[0]
+        coord_type = data.get('coord_type', False)
+        sim_width = data.get('sim_width', 10.0)
+        spawn_bounds = data.get('spawn_bounds', data.get('bounds', [-1.0, 1.0]))
+        
+        ax.set_title(config_title)
+        
+        if self.is_torus:
+            # 3D Torus Projection View
+            R, r = 10, 4
+            u, v = np.mgrid[0:2*np.pi:25j, 0:2*np.pi:20j]
+            xw = (R + r * np.cos(v)) * np.cos(u)
+            yw = (R + r * np.cos(v)) * np.sin(u)
+            zw = r * np.sin(v)
+            ax.plot_wireframe(xw, yw, zw, color="gray", alpha=0.1, linewidth=0.5)
+            
+            limit = R + r + 2
+            ax.set_xlim(-limit, limit); ax.set_ylim(-limit, limit); ax.set_zlim(-limit, limit)
+            
+            boids = ax.scatter([], [], [], s=BOID_SIZE, color=color, alpha=0.8)
+            pred = ax.scatter([], [], [], s=PRED_SIZE, color='red', marker='X')
+            return {"type": "3d", "boids": boids, "pred": pred, "L": sim_width}
         else:
-            for ax in axs:
-                ax.set_xlabel(f"frame {i+1}/{time_steps}")
+            # 2D Flat View (Limits determined by provided logic)
+            spawn_bounds = np.array(spawn_bounds).flatten()
+            if coord_type == 'torus':
+                left, right = 0.0, float(sim_width)
+            else:
+                left, right = float(spawn_bounds[0])/ZOOM, float(spawn_bounds[1])/ZOOM
 
-    def on_speed_scrub(val):
-        ms = int(val)
-        state["speed"] = ms
-        ani.event_source.interval = ms
-        fig.canvas.draw_idle()
+            ax.set_xlim(left, right)
+            ax.set_ylim(left, right)
+            
+            p0 = data['positions'][0]
+            v0 = data['velocities'][0]
+            boids = ax.scatter(p0[:, 0], p0[:, 1], s=BOID_SIZE, color=color)
+            pred = ax.scatter([], [], s=PRED_SIZE, color='red')
+            quiver = ax.quiver(p0[:, 0], p0[:, 1], v0[:, 0], v0[:, 1], 
+                               color=color, alpha=0.4, scale=ARROW_SCALE, width=ARROW_WIDTH)
+            return {"type": "2d", "boids": boids, "pred": pred, "quiver": quiver}
 
-    def on_time_scrub(val):
-        state["playing"] = False
-        btn.label.set_text("Play")
-        draw_frame(int(val))
-        fig.canvas.draw_idle()
+    def _init_ui(self):
+        self.fig.subplots_adjust(bottom=0.25)
+        
+        ax_time = self.fig.add_axes([0.25, 0.12, 0.55, 0.03])
+        self.slider_time = Slider(ax_time, "Time ", 0, self.time_steps - 1, valinit=0, valstep=1)
+        self.slider_time.on_changed(self._on_slider_manual)
+        
+        ax_play = self.fig.add_axes([0.1, 0.11, 0.1, 0.05])
+        self.btn_play = Button(ax_play, "Play")
+        self.btn_play.on_clicked(self._toggle_playback)
+        
+        ax_toggle = self.fig.add_axes([0.1, 0.04, 0.15, 0.05])
+        self.btn_toggle = Button(ax_toggle, "Toggle 2D/3D")
+        self.btn_toggle.on_clicked(self._toggle_geometry)
 
-    def on_button_clicked(_):
-        state["playing"] = not state["playing"]
-        btn.label.set_text("Pause" if state["playing"] else "Play")
+    def _toggle_geometry(self, event):
+        self.is_torus = not self.is_torus
+        self._init_layout()
+        self.draw_frame(self.frame)
+        self.fig.canvas.draw_idle()
 
-    def tick(_):
-        if state["playing"]:
-            nxt = (state["frame"] + 1) % time_steps
-            playback_slider.eventson = False
-            playback_slider.set_val(nxt)
-            playback_slider.eventson = True
-            draw_frame(nxt)
+    def _on_slider_manual(self, val):
+        if not self.playing:
+            self.draw_frame(val)
 
-    playback_slider.on_changed(on_time_scrub)
-    speed_slider.on_changed(on_speed_scrub)
-    btn.on_clicked(on_button_clicked)
+    def _toggle_playback(self, event):
+        self.playing = not self.playing
+        self.btn_play.label.set_text("Pause" if self.playing else "Play")
 
-    draw_frame(0)
-    ani = FuncAnimation(fig, tick, interval=state['speed'], blit=False, cache_frame_data=False)
+    def _to_torus_3d(self, pos, L, R=10, r=4):
+        phi = 2 * np.pi * (pos[:, 0] / L)
+        theta = 2 * np.pi * (pos[:, 1] / L)
+        return (R + r * np.cos(theta)) * np.cos(phi), (R + r * np.cos(theta)) * np.sin(phi), r * np.sin(theta)
 
-    # keep reference alive (important!)
-    fig._ani = ani
+    def draw_frame(self, i):
+        self.frame = int(i)
+        for idx, art in enumerate(self.artists):
+            data = self.datasets[idx]
+            p, pr = data['positions'][self.frame], data['predator_positions'][self.frame]
+            if art['type'] == '3d':
+                bx, by, bz = self._to_torus_3d(p, art['L'])
+                art['boids']._offsets3d = (bx, by, bz)
+                px, py, pz = self._to_torus_3d(pr.reshape(-1, 2), art['L'])
+                art['pred']._offsets3d = (px, py, pz)
+            else:
+                v = data['velocities'][self.frame]
+                art['boids'].set_offsets(p); art['pred'].set_offsets(pr)
+                art['quiver'].set_offsets(p); art['quiver'].set_UVC(v[:, 0], v[:, 1])
+        self.fig.canvas.draw_idle()
 
-    plt.show()
-
-    
-def GetArtist(ax,data,colour):
-    positions = data['positions']
-    velocities = data['velocities']
-    spawn_bounds = data['bounds']
-    config_title = data.get('config_title',None)
-    config_title = "No Title Found!" if config_title is None else f"{config_title[0]}.ini"
-    
-    #boid_count = data['boid_count']
-    #predator_positions = data['predator_positions']
-    #time_steps= data['time_steps']
-
-    ax.set_title(config_title)
-    spawn_bounds = np.array(spawn_bounds).flatten()
-    left, right = float(spawn_bounds[0])/ZOOM, float(spawn_bounds[1])/ZOOM
-    ax.set_xlim(left,right)
-    ax.set_ylim(left,right)
-
-    ax.set_aspect("equal", adjustable="box")
-
-    boids_scatter = ax.scatter([], [], s=BOID_SIZE,color=colour)
-    pred_scatter  = ax.scatter([], [], s=PRED_SIZE,color=colour)
-
-    boids0 = positions[0]
-    vel0 = velocities[0]
-
-    boids_quiver = ax.quiver(boids0[:, 0], boids0[:, 1],vel0[:, 0], vel0[:, 1], angles='xy', scale_units='xy', scale=ARROW_SCALE, width=ARROW_WIDTH,color=colour)
-
-    return {
-        "boids": boids_scatter,
-        "pred": pred_scatter,
-        "quiver": boids_quiver,
-    }
-
-def load_run(path: str) -> dict:
-    z = np.load(path, allow_pickle=True)
-    return {
-        "positions": z["positions"],
-        "velocities": z["velocities"],
-        "predator_positions": z["predator_positions"],
-        "time_steps": int(z["time_steps"]),
-        "boid_count": int(z["boid_count"]),
-        "bounds": z["bounds"],
-    }
-
-def main():
-    args = parser.parse_args()
-    filenames = args.input
-    filenames = np.array(filenames).flatten()
-    datas =[load_run(f) for f in filenames]
-    View(datas)
-
-if __name__ == "__main__":
-    main()
+    def tick(self, _):
+        if self.playing:
+            self.frame = (self.frame + 1) % self.time_steps
+            self.slider_time.eventson = False
+            self.slider_time.set_val(self.frame)
+            self.slider_time.eventson = True
+            self.draw_frame(self.frame)
