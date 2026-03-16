@@ -1,4 +1,3 @@
-#this is a copy which attempts to use an external params manager
 import numpy as np
 from scipy.integrate import solve_ivp
 from tqdm import trange
@@ -62,10 +61,20 @@ class BoidSimulator:
 
     def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
         if self.PARAMS()['COORD_SYSTEM']=='torus':
+            width = self.PARAMS()['SIM_WIDTH']
             if len(neis_x)==0:
-                return boid
-            mean = np.mean(neis_x,axis=0)
-            return mean
+                return np.zeros(2)
+            
+            angles = (neis_x / self.PARAMS()['SIM_WIDTH']) * 2 * np.pi
+            mean_cos = np.mean(np.cos(angles),axis=0)
+            mean_sin = np.mean(np.sin(angles),axis=0)
+
+            mean_angle = np.arctan2(mean_sin,mean_cos)
+            
+            target = ((mean_angle / (2 * np.pi)) % 1.0) * self.PARAMS()['SIM_WIDTH']
+            diff = target - boid
+            diff = (diff + width/2) % width - width/2
+            return diff
 
         return home-boid
 
@@ -222,7 +231,6 @@ class BoidSimulator:
             lorenz = lorenz+self.PARAMS()['SIM_WIDTH']/2
             #2. Wrap the recentered lorenz
             lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
-        
         positions.append(p)
         velocities.append(v)
 
