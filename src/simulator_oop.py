@@ -9,13 +9,12 @@ import os
 from scipy.spatial import KDTree
 import threading
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
+import matplotlib.pyplot as plt
 
 from SimParams import SimParams
 from SimSaverLoader import SimSaverLoader
 from BoidVisualizer import BoidVisualizer
 from BoidSimulator import BoidSimulator
-
-import matplotlib.pyplot as plt
 
 
 parser = argparse.ArgumentParser()
@@ -63,7 +62,7 @@ def main(custom_args=None):
     print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nmultithreading: {multithread}")
 
     if not we_be_saving and run: 
-        input('########## WARNING ##########\nNo save path, run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
+        input('\n--------- WARNING ---------\nNo save path, run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
 
 
     #(1)

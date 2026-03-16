@@ -10,13 +10,11 @@ from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 from SimSaverLoader import SimSaverLoader
 from SimParams import SimParams
 
-import matplotlib.pyplot as plt
 
 EPS =1e-12 # used for avoiding divide by 0
 
 
 class BoidSimulator:
-
     def __init__(self,coordinate_system='torus'):
         self.COORDINATE_SYSTEMS = ['flat','torus']
 
@@ -98,12 +96,14 @@ class BoidSimulator:
             return np.array([0.0,0.0])
 
     def __total_force(self, boid_x, boid_v, a_neighbours, r_neighbours, h_neighbours, pred_x=None):
+
+        no_lorenz = 1 if self.PARAMS()['PREDATOR'] else 0 #if lorenz is disabled in the params
     #           |-coefficent-----------------|-force--------------------|-force-params---------|
         force = ((self.PARAMS()['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
                 (self.PARAMS()['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
                 (self.PARAMS()['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
                 (self.PARAMS()['K_FRICTION']  *  self.__friction_force  (boid_v))              +
-                (self.PARAMS()['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x) ))       
+                (self.PARAMS()['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x)*no_lorenz ))       
 
         # sigmoidal function
         force_sigmoid = self.PARAMS()['ALPHA'] * np.tanh(self.PARAMS()['BETA'] * force)
@@ -167,7 +167,7 @@ class BoidSimulator:
         lorenz_series = np.column_stack((rescaled_x_coords,rescaled_y_coords))
 
         return lorenz_series
-        
+
     def __generate_flock(self,flock_size,spawn_bounds,random_velocity=False):
         #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
         spawn_min = min(spawn_bounds)
@@ -211,7 +211,7 @@ class BoidSimulator:
         new_x = current_x + (new_v * self.PARAMS()['DELTA_T'])
 
         return new_v,new_x
-    
+
     def run_simulation(self):
         if len(self.PARAMS()) is None:
             raise Exception('Please generate params and apply them before running simulation. apply_params()')
@@ -234,7 +234,6 @@ class BoidSimulator:
         
         positions.append(p)
         velocities.append(v)
-
 
 
         """below is a very excentric way of getting the number from the end of the thread name seen <Thread(ThreadPoolExecutor-0_0, started 6119583744)> (which is what current_thread() returns in a MT scenario)
@@ -260,9 +259,10 @@ class BoidSimulator:
             "positions": positions,
             "velocities": velocities,
             "predator_positions": lorenz,
-            "time_steps": self.PARAMS()['TIME_STEPS'],
-            "boid_count": self.PARAMS()['BOID_COUNT'],
             "bounds": self.spawn_bounds,
             "coord_type":self.coord_system,
-            "sim_width":self.PARAMS()['SIM_WIDTH']
+            #"boid_count": self.PARAMS()['BOID_COUNT'],
+            #"time_steps": self.PARAMS()['TIME_STEPS'],
+            #"sim_width":self.PARAMS()['SIM_WIDTH'],
+            "parameters":self.PARAMS()
         }

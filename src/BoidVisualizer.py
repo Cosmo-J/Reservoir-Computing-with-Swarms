@@ -2,10 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, Slider
-import argparse
-import os
-import sys
 from mpl_toolkits.mplot3d import Axes3D
+
+from SimParams import SimParams
 
 # --- Global Visual Constants ---
 DARK_MODE = False
@@ -86,9 +85,16 @@ class BoidVisualizer:
         self.fig.canvas.draw_idle()
 
     def _create_artist(self, ax, data, color):
+        # Below is a crude way of determining which version of the simulation was saved in the npz
+
+
+        sim_params = data.get('parameters',SimParams.DEFAULTS)
+        self.show_lorenz = sim_params.get('PREDATOR')
+
+        sim_width = data.get('sim_width', sim_params.get('SIM_WIDTH'))#this ensures compatibility with older versions
+
         config_title = data.get('config_title', ["Simulation"])[0]
         coord_type = data.get('coord_type', False)
-        sim_width = data.get('sim_width', 10.0)
         spawn_bounds = data.get('spawn_bounds', data.get('bounds', [-1.0, 1.0]))
         
         ax.set_title(config_title)
@@ -106,7 +112,7 @@ class BoidVisualizer:
             ax.set_xlim(-limit, limit); ax.set_ylim(-limit, limit); ax.set_zlim(-limit, limit)
             
             boids = ax.scatter([], [], [], s=BOID_SIZE, color=color, alpha=0.8)
-            pred = ax.scatter([], [], [], s=PRED_SIZE, color='red', marker='X')
+            pred = ax.scatter([], [], [], s=PRED_SIZE, color='red', marker='X',visible = self.show_lorenz)
             return {"type": "3d", "boids": boids, "pred": pred, "L": sim_width}
         else:
             # 2D Flat View (Limits determined by provided logic)
@@ -122,9 +128,9 @@ class BoidVisualizer:
             p0 = data['positions'][0]
             v0 = data['velocities'][0]
             boids = ax.scatter(p0[:, 0], p0[:, 1], s=BOID_SIZE, color=color)
-            pred = ax.scatter([], [], s=PRED_SIZE, color='red')
+            pred = ax.scatter([], [], s=PRED_SIZE, color='red',visible=self.show_lorenz)
             quiver = ax.quiver(p0[:, 0], p0[:, 1], v0[:, 0], v0[:, 1], 
-                               color=color, alpha=0.4, scale=ARROW_SCALE, width=ARROW_WIDTH)
+                                color=color, alpha=0.4, scale=ARROW_SCALE, width=ARROW_WIDTH)
             return {"type": "2d", "boids": boids, "pred": pred, "quiver": quiver}
 
     def _init_ui(self):

@@ -1,9 +1,7 @@
 import configparser
 
-
 class SimParams:
-    def __init__(self):
-        self.DEFAULTS = {
+    DEFAULTS = {
             # Simulation params
             "sim":
                 {
@@ -12,8 +10,9 @@ class SimParams:
                     "BOID_COUNT": 200,
                     "SPAWN_MIN": -1.0,
                     "SPAWN_MAX": 1.0,
-                    "RANDOM_VELOCITY": False,
-                    "SIM_WIDTH": 10
+                    "RANDOM_VELOCITY": True,
+                    "SIM_WIDTH": 10,
+                    "PREDATOR":True
                 },
 
             # force constants
@@ -55,6 +54,8 @@ class SimParams:
                     "L_SAMPLING_RATE" : 0.02 # number of sample per time step, also kind of predator speed
                 }
         }
+
+    def __init__(self):
         self.params = self.get_flat_params(self.DEFAULTS)
 
     
@@ -82,8 +83,12 @@ class SimParams:
         for section_title,section in self.DEFAULTS.items():
             for k,v in section.items():
                 cast = type(v)
-                if cfg.has_option(section_title,k):
-                    self.params[k] = cast(cfg.get(section_title,k))
+                lower_key = k.lower()
+                if cfg.has_option(section_title,lower_key):
+                    if cast == bool:
+                        self.params[k] = cfg.getboolean(section_title,lower_key)
+                    else:
+                        self.params[k] = cast(cfg.get(section_title,lower_key))
                 else:
                     input(f'Config {path} is missing a key:value for {section_title} {k} \n\t Please update the .ini to use this config file!\nType anything to continue with default: {v}')
                     self.params[k] = v
