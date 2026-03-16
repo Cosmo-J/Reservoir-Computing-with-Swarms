@@ -15,15 +15,6 @@ EPS =1e-12 # used for avoiding divide by 0
 
 
 class BoidSimulator:
-    def __init__(self,coordinate_system='torus'):
-        self.COORDINATE_SYSTEMS = ['flat','torus']
-
-
-        if coordinate_system.lower().strip() in self.COORDINATE_SYSTEMS:
-            self.coord_system = coordinate_system
-        else:
-            raise KeyError(f'Coordinate system "{coordinate_system}" is not a valid option:\n\t{self.COORDINATE_SYSTEMS}')
-
     def initialise(self,param_loader:SimParams= None, sim_saver_loader:SimSaverLoader=None):
         '''
             sets and or creates a SimParms and SimSaverLoader object for the BoidSimulator
@@ -70,7 +61,7 @@ class BoidSimulator:
         return force
 
     def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
-        if self.coord_system=='torus':
+        if self.PARAMS()['COORD_SYSTEM']=='torus':
             if len(neis_x)==0:
                 return boid
             mean = np.mean(neis_x,axis=0)
@@ -113,11 +104,11 @@ class BoidSimulator:
     def __force_matrix(self,boid_xs,boid_vs,pred_x=None):
         forces = np.empty((len(boid_xs),2))
 
-        if self.coord_system == 'flat':
+        if self.PARAMS()['COORD_SYSTEM'] == 'flat':
             tree_points = boid_xs
             tree = KDTree(tree_points)
 
-        elif self.coord_system == 'torus':
+        elif self.PARAMS()['COORD_SYSTEM'] == 'torus':
             tree_points = self.__lorenz_wrap(boid_xs)
             tree = KDTree(tree_points, boxsize=self.PARAMS()['SIM_WIDTH'])
             
@@ -174,9 +165,9 @@ class BoidSimulator:
         spawn_max = max(spawn_bounds)
         spawn_width = np.abs(spawn_max-spawn_min)
 
-        if self.coord_system=='flat':
+        if self.PARAMS()['COORD_SYSTEM']=='flat':
             x = spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
-        elif self.coord_system=='torus':
+        elif self.PARAMS()['COORD_SYSTEM']=='torus':
             x = self.PARAMS()['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
 
         if random_velocity: 
@@ -224,7 +215,7 @@ class BoidSimulator:
         lorenz = self.__generate_lorenz(self.PARAMS()['TIME_STEPS'], self.PARAMS()['L_SAMPLING_RATE'], self.PARAMS()['X_LORENZ'], self.PARAMS()['Y_LORENZ'], self.PARAMS()['Z_LORENZ'])
         p, v = self.__generate_flock(self.PARAMS()['BOID_COUNT'], self.spawn_bounds, self.PARAMS()['RANDOM_VELOCITY'])
 
-        if self.coord_system=='torus':
+        if self.PARAMS()['COORD_SYSTEM']=='torus':
             p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
 
             #1. Center lorenz around a center where 
@@ -248,7 +239,7 @@ class BoidSimulator:
             new_v, new_x = self.__physics_step(t,positions, velocities, lorenz[t])
 
             #wrap the new positions
-            if self.coord_system=='torus':
+            if self.PARAMS()['COORD_SYSTEM']=='torus':
                 new_x = self.__lorenz_wrap(new_x)
             
             positions.append(new_x)
@@ -260,7 +251,7 @@ class BoidSimulator:
             "velocities": velocities,
             "predator_positions": lorenz,
             "bounds": self.spawn_bounds,
-            "coord_type":self.coord_system,
+            "coord_type":self.PARAMS()['COORD_SYSTEM'],
             #"boid_count": self.PARAMS()['BOID_COUNT'],
             #"time_steps": self.PARAMS()['TIME_STEPS'],
             #"sim_width":self.PARAMS()['SIM_WIDTH'],

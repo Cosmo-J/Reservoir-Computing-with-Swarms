@@ -22,6 +22,9 @@ class BoidVisualizer:
         
         # Initial geometry state
         self.is_torus = datasets[0].get('coord_type') == 'torus'
+        self.torus_toggle = datasets[0].get('coord_type') == 'torus'
+        print(self.torus_toggle)
+
         self.time_steps = len(datasets[0]['positions'])
         
         self.playing = False
@@ -61,9 +64,9 @@ class BoidVisualizer:
             if self.overlay and i > 0:
                 ax = self.axs[0]
             else:
-                proj = '3d' if self.is_torus else None
+                proj = '3d' if self.torus_toggle else None
                 ax = self.fig.add_subplot(1, num_cols, i + 1, projection=proj)
-                if self.is_torus:
+                if self.torus_toggle:
                     ax.set_box_aspect([1, 1, 1])
                     ax.axis('off')
                 else:
@@ -76,30 +79,20 @@ class BoidVisualizer:
         # Because clf() wipes the figure, we must re-init the UI widgets
         self._init_ui()
 
-    def _toggle_geometry(self, event):
-        self.is_torus = not self.is_torus
-        self._init_layout()
-        # Ensure we sync the slider back to our current frame after re-init
-        self.slider_time.set_val(self.frame)
-        self.draw_frame(self.frame)
-        self.fig.canvas.draw_idle()
-
     def _create_artist(self, ax, data, color):
         # Below is a crude way of determining which version of the simulation was saved in the npz
-
-
         sim_params = data.get('parameters',SimParams.DEFAULTS)
         self.show_lorenz = sim_params.get('PREDATOR')
 
         sim_width = data.get('sim_width', sim_params.get('SIM_WIDTH'))#this ensures compatibility with older versions
+        coord_type = sim_params.get('COORD_SYSTEM')
 
         config_title = data.get('config_title', ["Simulation"])[0]
-        coord_type = data.get('coord_type', False)
         spawn_bounds = data.get('spawn_bounds', data.get('bounds', [-1.0, 1.0]))
         
         ax.set_title(config_title)
         
-        if self.is_torus:
+        if self.torus_toggle and self.is_torus:
             # 3D Torus Projection View
             R, r = 10, 4
             u, v = np.mgrid[0:2*np.pi:25j, 0:2*np.pi:20j]
@@ -144,13 +137,18 @@ class BoidVisualizer:
         self.btn_play = Button(ax_play, "Play")
         self.btn_play.on_clicked(self._toggle_playback)
         
-        ax_toggle = self.fig.add_axes([0.1, 0.04, 0.15, 0.05])
-        self.btn_toggle = Button(ax_toggle, "Toggle 2D/3D")
-        self.btn_toggle.on_clicked(self._toggle_geometry)
+        if self.is_torus:
+            ax_toggle = self.fig.add_axes([0.1, 0.04, 0.15, 0.05])
+            self.btn_toggle = Button(ax_toggle, "Toggle 2D/3D")
+            self.btn_toggle.on_clicked(self._toggle_geometry)
 
     def _toggle_geometry(self, event):
-        self.is_torus = not self.is_torus
+        #self.torus_toggle = not self.torus_toggle
+        self.torus_toggle = not self.torus_toggle
+
         self._init_layout()
+
+        self.slider_time.set_val(self.frame)
         self.draw_frame(self.frame)
         self.fig.canvas.draw_idle()
 

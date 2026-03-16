@@ -12,7 +12,8 @@ class SimParams:
                     "SPAWN_MAX": 1.0,
                     "RANDOM_VELOCITY": True,
                     "SIM_WIDTH": 10,
-                    "PREDATOR":True
+                    "PREDATOR":True,
+                    'COORD_SYSTEM':'flat'#can be flat or torus
                 },
 
             # force constants
