@@ -4,7 +4,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, Slider
 from mpl_toolkits.mplot3d import Axes3D
 
-from SimParams import SimParams
+from .SimParams import SimParams
 
 # --- Global Visual Constants ---
 DARK_MODE = False

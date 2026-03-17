@@ -6,8 +6,8 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
-from SimSaverLoader import SimSaverLoader
-from SimParams import SimParams
+from .SimSaverLoader import SimSaverLoader
+from .SimParams import SimParams
 
 
 EPS =1e-12 # used for avoiding divide by 0

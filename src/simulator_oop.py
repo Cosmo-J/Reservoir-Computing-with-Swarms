@@ -1,20 +1,13 @@
 #this is a copy which attempts to use an external params manager
-import numpy as np
-from scipy.integrate import solve_ivp
 from tqdm import trange
 from tqdm import tqdm
-from datetime import datetime
 import argparse
 import os
-from scipy.spatial import KDTree
-import threading
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 import matplotlib.pyplot as plt
 
-from SimParams import SimParams
-from SimSaverLoader import SimSaverLoader
-from BoidVisualizer import BoidVisualizer
-from BoidSimulator import BoidSimulator
+from .BoidVisualizer import BoidVisualizer
+from .BoidSimulator import BoidSimulator
 
 
 parser = argparse.ArgumentParser()
