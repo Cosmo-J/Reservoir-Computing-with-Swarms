@@ -41,7 +41,7 @@ class SimSaverLoader:
             time_steps=data["time_steps"],
             boid_count=data["boid_count"],
             bounds=data["bounds"],
-            config=data['parameters'],
+            config=data['config'],
             config_title = [config_title]
         )
 

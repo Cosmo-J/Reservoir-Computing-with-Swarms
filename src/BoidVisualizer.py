@@ -196,8 +196,8 @@ class BoidVisualizer:
         self.time_steps = len(datasets[0]['positions'])
         
         # Initial state logic
-        self.params = datasets[0].get('config',[{}]).item()
-        self.is_torus_sim = self.params.get('COORD_SYSTEM','flat') == 'torus'
+        self.config = datasets[0].get('config',[{}]).item()
+        self.is_torus_sim = self.config.get('COORD_SYSTEM','flat') == 'torus'
         self.torus_view = self.is_torus_sim  # Current toggle state
         print(self.is_torus_sim)
         
@@ -242,9 +242,9 @@ class BoidVisualizer:
         self.draw_frame(self.frame)
 
     def _create_artist(self, ax, data, color, torus_view):
-        sim_params = self.params
-        show_pred = sim_params.get('PREDATOR', True)
-        sim_width = data.get('sim_width', sim_params.get('SIM_WIDTH'))
+        sim_config = self.config
+        show_pred = sim_config.get('PREDATOR', True)
+        sim_width = data.get('sim_width', sim_config.get('SIM_WIDTH'))
         
         # Determine simulation title
         title_list = data.get('config_title', ["Simulation"])

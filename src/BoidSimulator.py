@@ -263,5 +263,5 @@ class BoidSimulator:
             "boid_count": self.PARAMS()['BOID_COUNT'],
             "time_steps": self.PARAMS()['TIME_STEPS'],
             "sim_width":self.PARAMS()['SIM_WIDTH'],
-            "parameters":self.PARAMS()
+            "config":self.PARAMS()
         }
