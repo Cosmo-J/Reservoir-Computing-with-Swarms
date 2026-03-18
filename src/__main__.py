@@ -6,8 +6,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 import matplotlib.pyplot as plt
 
-from .BoidVisualizer import BoidVisualizer
-from .BoidSimulator import BoidSimulator
+from . import BoidSimulator, BoidVisualizer
 
 
 parser = argparse.ArgumentParser()
@@ -61,7 +60,8 @@ def main(custom_args=None):
     #(1)
     if view and not run:
         datas = SaverLoader.find_npzs(view)
-        BoidVisualizer(datas, overlay=True)
+        bv = BoidVisualizer(datas)
+        ani = bv.get_animation(overlay=True)
         plt.show()
         return 
 
@@ -95,8 +95,9 @@ def main(custom_args=None):
 
 
         if view: 
-            BoidVisualizer(datas, overlay=True)
-            plt.show()       
+            bv = BoidVisualizer(datas)
+            ani = bv.get_animation(overlay=True)
+            plt.show()
         
         return datas
 

@@ -41,7 +41,7 @@ class SimSaverLoader:
             time_steps=data["time_steps"],
             boid_count=data["boid_count"],
             bounds=data["bounds"],
-            config=PARAMS,
+            config=data['parameters'],
             config_title = [config_title]
         )
 
@@ -107,7 +107,8 @@ class SimSaverLoader:
         run_dict["time_steps"] = int(z.get("time_steps")),
         run_dict["boid_count"] = int(z.get("boid_count")),
         run_dict["bounds"] = z.get("bounds"),
-        run_dict["config_title"] = z.get("config_title")
+        run_dict["config_title"] = z.get("config_title"),
+        run_dict["config"] = z.get("config")
         
         #print(f"Checking if features of '{path}' are up to date...")
         for k,v in run_dict.items():

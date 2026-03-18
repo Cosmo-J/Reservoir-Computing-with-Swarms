@@ -260,8 +260,8 @@ class BoidSimulator:
             "predator_positions": lorenz,
             "bounds": self.spawn_bounds,
             "coord_type":self.PARAMS()['COORD_SYSTEM'],
-            #"boid_count": self.PARAMS()['BOID_COUNT'],
-            #"time_steps": self.PARAMS()['TIME_STEPS'],
-            #"sim_width":self.PARAMS()['SIM_WIDTH'],
+            "boid_count": self.PARAMS()['BOID_COUNT'],
+            "time_steps": self.PARAMS()['TIME_STEPS'],
+            "sim_width":self.PARAMS()['SIM_WIDTH'],
             "parameters":self.PARAMS()
         }
