@@ -265,3 +265,4 @@ class BoidSimulator:
             "sim_width":self.PARAMS()['SIM_WIDTH'],
             "config":self.PARAMS()
         }
+

@@ -1,25 +1,28 @@
 import numpy as np
+from matplotlib import pyplot as plt
+from .SimSaverLoader import SimSaverLoader
+from .ObservationLayer import FlatReadout
 
 class PropertyAnalysis:
     '''
     Used to analysise the properties of a reservoir
     '''
 
-    def __init__(self,simulations):
-        self.simulations = simulations
-
-        self.state_vectors = [] #per replica
+    def __init__(self,replicas):
+        '''
+            readouts should be a list of identical (shape) state vectors. If only one replica, should be passed nested in a list.
+            Called readout because in the context of the kernel observation layer readout makes more sense
+        '''
+        self.state_vectors = np.array(replicas) #per replica
         self.covariance_matricies = []# per replica
         self.eigen_vectors = []# per replica
         self.eigen_values = []# per replica
         self.normalisation_transforms = []# per replica
-        self.state_vectors_normalised = []
+        self.sv_norm = []#state vector normalised
 
-        for s in simulations:
-            s_state_vector = self.__calc_state_vector(s)
-            self.state_vectors.append(s_state_vector)
+        for s in self.state_vectors:
 
-            s_covariance_matrix = self.__calc_covariance_matrix(s_state_vector)
+            s_covariance_matrix = self.__calc_covariance_matrix(s)
             self.covariance_matricies.append(s_covariance_matrix)
 
             s_eigen_values, s_eigen_vectors =  np.linalg.eigh(s_covariance_matrix)
@@ -31,8 +34,8 @@ class PropertyAnalysis:
             s_norm_trans = self.__calc_norm_transform(s_eigen_vectors, sigma_squared)
             self.normalisation_transforms.append(s_norm_trans)
             
-            s_vectors_normalised = s_state_vector@s_norm_trans
-            self.state_vectors_normalised.append(s_vectors_normalised)
+            s_vectors_normalised = s@s_norm_trans
+            self.sv_norm.append(s_vectors_normalised)
 
         self.state_vectors = np.array(self.state_vectors)
         self.covariance_matricies = np.array(self.covariance_matricies)
@@ -49,26 +52,7 @@ class PropertyAnalysis:
             Returns:
                 the normalisation transform = QΣ⁻¹Qᵀ
         """
-
         return Q @ np.linalg.inv(np.sqrt(Sigma_squared)) @ Q.T
-
-    def __calc_state_vector(self,simulation):
-            '''
-                Params:
-                    simulation:
-                        this is the npz outputted by simsaverloader which is a dictionary containing
-                        the different features of the simulation
-                Returns:
-                    a concatinated list (or vector) of pos_x+pos_y+vel_x+vel_y.
-                    Output shape should be (T,4*n) where n is the number of boids in the simulation or readouts.
-                
-            '''
-            x = simulation['positions']
-            v = simulation['velocities']
-            r_i = np.array(np.concatenate([x,v],axis=2))
-            r_i = r_i.reshape(r_i.shape[0],r_i.shape[1]*r_i.shape[2])
-            
-            return r_i
 
     def __calc_covariance_matrix(self,state,assume_zero_mean:bool = True):
         '''
@@ -92,7 +76,6 @@ class PropertyAnalysis:
             out:
                 the symetric matrix of state S^T S averaged over time
         '''
-
         if not assume_zero_mean:
             #cxx = < ( x_i(t)-xi_mean) * ( xj(t)-xj_mean ) >
             state_mean = np.mean(state,axis=0) # the mean for each state value [x1_mean, ... xn_mean] (where n is the size of the state vector)
@@ -107,6 +90,7 @@ class PropertyAnalysis:
         cxx+=(10**-9)*np.eye(len(cxx)) # "To ensure numerical stability, we add a small regularization term" - lymburn et al
         return cxx
 
+
     def calc_x_covariance_matrix(self,replica_state1,replica_state2):
         '''
             cross covariance matrix
@@ -119,16 +103,61 @@ class PropertyAnalysis:
         css = self.calc_x_covariance_matrix(replica1,replica2)
         trace = np.trace(css)
         return trace
-
+    
         # below would only work if Css is symetric. Which is only a given if replica1 = replica2.T 
         #eigen_values,_ = np.linalg.eig(css)
         #return np.sum(eigen_values)
 
+    def plot_consistency_profile(self,x_covariance_matrix,truncated_to=100,show_consistent_capacity=True,dpi=200):
+        '''
+            Parameters:
+                x_covariance_matrix:
+                    the cross covariance matrix between (assuming) two replicas
+                truncated_to:
+                    default = 100 (per lymburn et al). Limits the width of the graph showing only top 100 covaried feautures.
+                show_consistent_capacity:
+                    whether the plot should include the consistent capacity in the middle
+
+            Returns:
+                ax
+        '''
+        gamma2_k = np.diag(x_covariance_matrix)
+        gamma2_k_ranked = np.flip(np.sort(gamma2_k,))
+
+        plt.rcParams['text.usetex'] = True
+        plt.rcParams['font.size'] = 18
+        
+        fig, ax = plt.subplots(dpi=dpi)
+        
+        ax.plot(gamma2_k_ranked[:truncated_to])
+        ax.set_ylabel(r'$\gamma^{2}_{k}$',rotation=0,labelpad=20,fontsize=20)
+
+        ax.set_xlabel(r'$k$')
+        ax.set_xlim(left=0)
+        ax.set_ybound([0,1])
+
+        ax.set_xticks([0,truncated_to/2,truncated_to])
+        ax.set_yticks([0,0.5,1])
+        ax.set_box_aspect(1)
+        fig.tight_layout()
+
+        if show_consistent_capacity:
+            trace = np.trace(x_covariance_matrix)
+            middle_text = r'$\Theta$' + f'={trace}'
+            ax.text(ax.get_xbound()[1]/2, ax.get_ybound()[1]/2, middle_text, fontweight='bold', horizontalalignment='center')   
+
+        return ax
 
 
+""" run_path = '/Users/cosmo/Dropbox/University/Year 3/Individual Project/code/tests/super_long'
+datas = SimSaverLoader.find_npzs(run_path)
+fr = FlatReadout(datas[0],datas[1])
 
-#path = ['tests/super_long/']
-#datas = ssl.find_npzs(path)
-#pa = PropertyAnalysis(datas)
+v1= fr.get_reservoir_state_vectorised(datas[0])
+v2= fr.get_reservoir_state_vectorised(datas[1])
 
-#consistent_capacity = pa.calc_consistent_capacity(pa.state_vectors_normalised[0],pa.state_vectors_normalised[1])
+pa = PropertyAnalysis([v1,v2])
+
+ccx = pa.calc_x_covariance_matrix(pa.sv_norm[0],pa.sv_norm[1])
+ax = pa.plot_consistency_profile(ccx)
+plt.show() """
