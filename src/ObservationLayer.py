@@ -144,9 +144,8 @@ class ObservationAndPrediction(ABC):
             consistent_capacity = self.consistent_capacity
             gamma2_vector = self.gamma2_vector
 
-        gamma2_k_ranked = np.flip(np.sort(gamma2_vector,))
+        gamma2_k_ranked = np.sort(gamma2_vector,)[::-1]
 
-        plt.rcParams['text.usetex'] = True
         plt.rcParams['font.size'] = 18
         
         fig, ax = plt.subplots(dpi=dpi)
@@ -173,8 +172,6 @@ class ObservationAndPrediction(ABC):
 class KernelReadout(ObservationAndPrediction):
     def __init__(self,kernel_number,replica1,replica2,washout):
         super().__init__(replica1,replica2,washout)
-        self.readout = 'kernels'
-        '''number of observation kernels'''
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
 
@@ -412,12 +409,49 @@ class KernelReadout(ObservationAndPrediction):
 
 class FlatReadout(ObservationAndPrediction):
     
-    def __init__(self,training,testing):
-        super().__init__(training,testing)
-        self.readout = 'flat'
-
+    def __init__(self,replica1,replica2,washout):
+        super().__init__(replica1,replica2,washout)
     
     def get_reservoir_state_vectorised(self, data):
         x = data['positions']
         pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
         return pos_flattened
+    
+    def calc_consistency_profile(self, sv1, sv2):
+        '''
+            implements the equations outlined in the appendix A1-A4
+        '''
+        time_steps,modes = sv1.shape
+
+        #force them to have zero mean
+        x1 = sv1 - np.mean(sv1,axis=0)
+        x2 = sv2 - np.mean(sv2,axis=0)
+
+        assert np.allclose(np.mean(x1),np.mean(x2))
+
+        #x1 autocovariance
+        cxx = (x1.T@x1)/ time_steps
+
+        # "To ensure numerical stability, we add a small regularization term"
+        cxx_reg = cxx + (1e-9 * np.eye(modes))
+
+        #transform for normalising readout
+        eigenvalues, eigenvectors = np.linalg.eigh(cxx_reg)
+        inverse_sigma = np.diagflat(1/np.sqrt(eigenvalues))
+
+        To = eigenvectors @ inverse_sigma @ eigenvectors.T
+
+        #apply transform
+        x1o = x1 @ To
+        x2o = x2 @ To
+
+        #calculate cross covariance matrix
+        cxx = (x1o.T @ x2o)/time_steps
+        print(cxx.shape)
+
+        #retrieve eigenvalues (where gamma squared is stated to be the same thing)
+        gamma_squared = np.linalg.eigvals(cxx)
+        consistent_capacity = np.trace(cxx)
+        assert np.allclose(consistent_capacity,np.sum(gamma_squared))
+
+        return consistent_capacity,gamma_squared
