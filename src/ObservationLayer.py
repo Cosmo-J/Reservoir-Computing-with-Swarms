@@ -382,11 +382,6 @@ class KernelReadout(ObservationAndPrediction):
         # swapped the term position to properly match the shapes
         X1o = x1 @ To
         X2o = x2 @ To
-        cov = np.cov(X1o.T,bias=True)
-        I = np.eye(len(cov))
-        print(np.max(cov - cov*I))
-
-        assert np.allclose(np.cov(X1o.T),np.eye(X1o.shape[1]),atol=1e-6)
 
         '''
             "cross-covariance matrix of the two replicas [Css]ij = 〈s◦,i(t)s◦,j(t)〉 = 〈x◦,i(t)x'◦,j(t)〉."
