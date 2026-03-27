@@ -10,3 +10,5 @@ dfwm.txt
 /.vscode
 
 /setup_alias.sh
+
+lymurb_figures_recreated/**.png

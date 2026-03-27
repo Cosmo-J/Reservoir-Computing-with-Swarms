@@ -13,48 +13,41 @@ class PropertyAnalysis:
             readouts should be a list of identical (shape) state vectors. If only one replica, should be passed nested in a list.
             Called readout because in the context of the kernel observation layer readout makes more sense
         '''
-        self.state_vectors = np.array(replicas) #per replica
-        self.covariance_matricies = []# per replica
-        self.eigen_vectors = []# per replica
-        self.eigen_values = []# per replica
+        self.state_vectors = [] #per replica
+        self.autocovariances = []
         self.normalisation_transforms = []# per replica
-        self.sv_norm = []#state vector normalised
 
-        for s in self.state_vectors:
+        for s in replicas:
+            #The paper assumes 0 mean given unlimited time steps so that variance can be calculated correctlty
+            #hence below which makes it so that s has a mean 0
+            s = s - np.mean(s,axis=0,keepdims=True)
+            self.state_vectors.append(s)
+            s_autocovariance_matrix = self.__calc_autocovariance_matrix(s)
+            self.autocovariances.append(s_autocovariance_matrix)
+            s_eigen_values, s_eigen_vectors =  np.linalg.eigh(s_autocovariance_matrix)
 
-            s_covariance_matrix = self.__calc_covariance_matrix(s)
-            self.covariance_matricies.append(s_covariance_matrix)
+            assert np.allclose(s_eigen_vectors@np.diagflat(s_eigen_values)@s_eigen_vectors.T, s_autocovariance_matrix) # validates the eigendecomposition
 
-            s_eigen_values, s_eigen_vectors =  np.linalg.eigh(s_covariance_matrix)
-            sigma_squared = np.diagflat(s_eigen_values)
-
-            self.eigen_vectors.append(s_eigen_vectors)
-            self.eigen_values.append(sigma_squared)
-
-            s_norm_trans = self.__calc_norm_transform(s_eigen_vectors, sigma_squared)
+            s_norm_trans = self.__calc_norm_transform(s_eigen_vectors, s_eigen_values)
             self.normalisation_transforms.append(s_norm_trans)
             
-            s_vectors_normalised = s@s_norm_trans
-            self.sv_norm.append(s_vectors_normalised)
-
         self.state_vectors = np.array(self.state_vectors)
-        self.covariance_matricies = np.array(self.covariance_matricies)
-        self.eigen_vectors = np.array(self.eigen_vectors)
-        self.eigen_values = np.array(self.eigen_values)
 
-    def __calc_norm_transform(self,Q,Sigma_squared):
+    def __calc_norm_transform(self,Q,eigen_values):
         """
             Parameters:
-                eigvecs:
+                Q:
                     the eigenvector matrix of the given covariance matrix
-                eigvals:
+                eigen_values:
                     the eigenvalue matrix of the given covariance matrix
             Returns:
                 the normalisation transform = QΣ⁻¹Qᵀ
         """
-        return Q @ np.linalg.inv(np.sqrt(Sigma_squared)) @ Q.T
+        eig_inv_sqrt = 1/np.sqrt(eigen_values)
+        Sigma_inv = np.diagflat(eig_inv_sqrt)
+        return Q @ Sigma_inv @ Q.T
 
-    def __calc_covariance_matrix(self,state,assume_zero_mean:bool = True):
+    def __calc_autocovariance_matrix(self,state_vector):
         '''
         Maths:
             Covariance equation:
@@ -76,43 +69,62 @@ class PropertyAnalysis:
             out:
                 the symetric matrix of state S^T S averaged over time
         '''
-        if not assume_zero_mean:
-            #cxx = < ( x_i(t)-xi_mean) * ( xj(t)-xj_mean ) >
-            state_mean = np.mean(state,axis=0) # the mean for each state value [x1_mean, ... xn_mean] (where n is the size of the state vector)
-            state_zero_mean = state-state_mean # the state vector where each value has zero mean
-            assert np.allclose(np.mean(state_zero_mean,axis=0),0)# ensures ts worked
-            state = state_zero_mean
         
-        time_steps = state.shape[0]
-        state_transpose = state.T #gives (S,T)
-        cxx=(state_transpose @ state)/time_steps
+        time_steps = state_vector.shape[0]
+        cxx=(state_vector.T @ state_vector)/time_steps
         
         cxx+=(10**-9)*np.eye(len(cxx)) # "To ensure numerical stability, we add a small regularization term" - lymburn et al
         return cxx
 
 
-    def calc_x_covariance_matrix(self,replica_state1,replica_state2):
+    def calc_consistency_profile(self,replica_idx:tuple):
         '''
             cross covariance matrix
+
+            Params:
+                replica_idx:
+                    a tuple (id1,id2) which will be used to index the given replicas
+
+            Returns:
+                Css = Qss Sigma^2ss Q.Tss 
+                out:
+                    covariance matrix (Css), eigenvector matrix (Qss), eigenvalue matrix (sigma squared), consistent capacity, gamma2_vector
         '''
-        time_steps = replica_state1.shape[0]
-        css = (replica_state1.T@replica_state2)/time_steps
-        return css
+        
+        id1=replica_idx[0]
+        id2=replica_idx[1]
 
-    def calc_consistent_capacity(self,replica1,replica2):
-        css = self.calc_x_covariance_matrix(replica1,replica2)
-        trace = np.trace(css)
-        return trace
-    
-        # below would only work if Css is symetric. Which is only a given if replica1 = replica2.T 
-        #eigen_values,_ = np.linalg.eig(css)
-        #return np.sum(eigen_values)
+        sv1=self.state_vectors[id1]
+        sv2=self.state_vectors[id2]
 
-    def plot_consistency_profile(self,x_covariance_matrix,truncated_to=100,show_consistent_capacity=True,dpi=200):
+        # average the autocovariance of both the vectors which again is to maintain the assumption that over infinite time the varience between two replicas would be identical for each mode
+        average_autocovariance = (self.autocovariances[id1] + self.autocovariances[id1]) / 2
+        eigen_values,eigen_vectors = np.linalg.eigh(average_autocovariance)
+        transformation = self.__calc_norm_transform(eigen_vectors,eigen_values)
+
+        replica1_norm = sv1 @ transformation
+        replica2_norm = sv2 @ transformation
+
+        time_steps = replica1_norm.shape[0]
+        css = ( replica1_norm.T @ replica2_norm ) / time_steps
+
+        eigen_values,_ = np.linalg.eigh(css)
+
+        sigma_squared = np.diagflat(eigen_values)
+        
+        consistent_capacity = np.round(np.trace(sigma_squared),decimals=1) # diagonal entries summed
+        gamma2_vector = np.diag(sigma_squared) # diagonal entries in a list
+
+
+        return consistent_capacity, gamma2_vector
+
+
+    def plot_consistency_profile(self,replica_idx:tuple,truncated_to=100,show_consistent_capacity=True,dpi=200):
         '''
             Parameters:
-                x_covariance_matrix:
-                    the cross covariance matrix between (assuming) two replicas
+                replica_idx:
+                    two replica idexes of replicas that where given on the object initialisation. These indexed replicas will be used to perform
+                    the cross covariance (between them), the 
                 truncated_to:
                     default = 100 (per lymburn et al). Limits the width of the graph showing only top 100 covaried feautures.
                 show_consistent_capacity:
@@ -121,8 +133,10 @@ class PropertyAnalysis:
             Returns:
                 ax
         '''
-        gamma2_k = np.diag(x_covariance_matrix)
-        gamma2_k_ranked = np.flip(np.sort(gamma2_k,))
+        consistent_capacity, gamma2_vector = self.calc_consistency_profile(replica_idx) 
+
+
+        gamma2_k_ranked = np.flip(np.sort(gamma2_vector,))
 
         plt.rcParams['text.usetex'] = True
         plt.rcParams['font.size'] = 18
@@ -142,8 +156,7 @@ class PropertyAnalysis:
         fig.tight_layout()
 
         if show_consistent_capacity:
-            trace = np.trace(x_covariance_matrix)
-            middle_text = r'$\Theta$' + f'={trace}'
+            middle_text = r'$\Theta$' + f'={consistent_capacity}'
             ax.text(ax.get_xbound()[1]/2, ax.get_ybound()[1]/2, middle_text, fontweight='bold', horizontalalignment='center')   
 
         return ax

@@ -6,7 +6,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 import matplotlib.pyplot as plt
 
-from . import BoidSimulator, BoidVisualizer
+from .BoidSimulator import BoidSimulator
+from .BoidVisualizer import BoidVisualizer
 
 
 parser = argparse.ArgumentParser()
