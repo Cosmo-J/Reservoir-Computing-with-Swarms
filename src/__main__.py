@@ -11,15 +11,15 @@ from .BoidVisualizer import BoidVisualizer
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,  help="Run a new simulation given a .ini file path of parameters.")
-parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,   help="Use with run or runview to perform multiple simulations.")
-parser.add_argument('--seed',                   type=int,   nargs='?', const=1,     help="Give a random seed to produce identical runs. Default seed is '1'.")
-parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',   help="generate an empty .ini with default parameters.")
-parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,         help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
-parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,  help="If iterations is more than 1, this parameter is taken as the save directory. Otherwise")
-parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="set true ")
+parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,                 help="Run a simulation given a .ini file path of parameters.")
+parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                  help="Number of times you want the simulation to be run.")
+parser.add_argument('--seed',                   type=int,   nargs='?', const=1,                    help="Give a random seed to produce identical runs. Default seed is '1'.")
+parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="generate an empty .ini with default parameters.")
+parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,                 help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
+parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,                help="If iterations is more than 1, use to specify the directory in which a run is saved. Otherwise it can be used to choose a specific save name")
+parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="When running multiple iterations, set true to enable multithreading")
 
-DEFAULT_SAVE_PATH = 'tests/boid_runs'
+DEFAULT_SAVE_PATH = 'tests/default_test_case'
 def main(custom_args=None):
     os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
     #below accounts for main being called by other scripts, where custom args is a custom object
@@ -36,7 +36,11 @@ def main(custom_args=None):
     ParamManager, SaverLoader = Simulator.initialise()
     # if generating params, early return because this is an iscolated use case
     if args.generate_params:
-        out_path = f"{args.generate_params}default_params.ini"
+        target_dir = args.generate_params
+        if target_dir == './':
+            target_dir = DEFAULT_SAVE_PATH
+
+        out_path = os.path.join(target_dir, "default_params.ini")
         print(f'Generating new parameters file at {out_path}')
         ParamManager.write_default_ini(out_path)
         return
@@ -51,11 +55,11 @@ def main(custom_args=None):
     
     we_be_saving = save_path is not None
 
+
     # Checks
     print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nmultithreading: {multithread}")
-
     if not we_be_saving and run: 
-        input('\n--------- WARNING ---------\nNo save path, run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
+        input('\n--------- WARNING ---------\nNo save path specified so the run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
 
 
     #(1)
