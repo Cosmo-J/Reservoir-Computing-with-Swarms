@@ -26,7 +26,14 @@ class BoidVisualizer:
         self.predator_trail_len = predator_trail
         self.boid_trail_len = boid_trail
         
-        self.config = datasets[0].get('config', np.array([{}])).item()
+        config = datasets[0].get('config', np.array([{}]) )
+        if isinstance(config,np.ndarray):
+            self.config = config.item()
+        else:
+            self.config = config
+
+        print()
+
         self.is_torus_sim = self.config.get('COORD_SYSTEM','flat') == 'torus'
         self.torus_view = self.is_torus_sim 
         
