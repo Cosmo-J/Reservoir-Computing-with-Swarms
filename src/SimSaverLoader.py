@@ -1,5 +1,8 @@
 import numpy as np
 import os
+import tempfile
+
+TMP_PATH = 'tmp'
 
 class SimSaverLoader:
     def __init__(self,save_path='boid_runs',config_title = 'NaN'):
@@ -60,7 +63,7 @@ class SimSaverLoader:
 
 
     @staticmethod
-    def find_npzs(paths: list):
+    def find_npzs(paths: list,memory_map=False):
         '''
         Takes some paths, of directories (in which it searches for npzs, or npz paths)
         :return: array of dictionaries containing the npz runs it found
@@ -68,32 +71,81 @@ class SimSaverLoader:
         if isinstance(paths, str):
             paths = [paths]
             
-        npzs = []
+        npz_paths = []
         for p in paths:
             if os.path.isdir(p):
                 sub_files = os.scandir(p)
-                npzs.extend([f.path for f in sub_files if f.name.endswith('.npz')])
+                npz_paths.extend([f.path for f in sub_files if f.name.endswith('.npz')])
             else:
-                npzs.append(p)
+                npz_paths.append(p)
         
-        datas = [SimSaverLoader.load_run(f) for f in npzs]
-        print(f'Loaded {len(datas)} run(s)')
+        if memory_map: 
+            print(f"Using numpy's memory mapping:")
 
+        datas = [SimSaverLoader.load_run(f,memory_map) for f in npz_paths]
+
+        print(f'\nLoaded {len(datas)} run(s)')
         return datas
 
     @staticmethod
-    def load_run( path: str) -> dict:
-        z = np.load(path, allow_pickle=True)
+    def load_run(path: str, memory_map=False):
+
         run_dict = {}
-        run_dict["positions"] = z.get("positions"),
-        run_dict["velocities"] = z.get("velocities"),
-        run_dict["predator_positions"] = z.get("predator_positions"),
-        run_dict["time_steps"] = int(z.get("time_steps")),
-        run_dict["boid_count"] = int(z.get("boid_count")),
-        run_dict["bounds"] = z.get("bounds"),
-        run_dict["config_title"] = z.get("config_title"),
-        run_dict["config"] = z.get("config")
-        
+        npz = np.load(path, allow_pickle=True)
+        run_dict["time_steps"]          = int(npz.get("time_steps"))
+        run_dict["boid_count"]          = int(npz.get("boid_count"))
+        run_dict["bounds"]              = npz.get("bounds")
+        run_dict["config_title"]        = npz.get("config_title")
+        run_dict["config"]              = npz.get("config")
+
+        time_steps = run_dict["time_steps"] 
+        boid_count = run_dict["boid_count"]
+
+        if memory_map:
+            #inform the user what the f is going on
+
+            #custom data structure so that str keying can still happen
+            data_structure = np.dtype([
+                ('positions', 'float64', (boid_count, 2)),
+                ('velocities', 'float64', (boid_count, 2)),
+                ('predator_positions', 'float64', (2,))
+            ])
+
+            #creating a tempory npy file
+            basename = os.path.basename(path).split('.')[0]
+            prefix = f"{basename}_"
+            os.makedirs(TMP_PATH,exist_ok=True)
+            npy_file = tempfile.NamedTemporaryFile(delete=False, prefix=prefix, suffix='.npy', dir=TMP_PATH)
+            npy_path = npy_file.name
+            npy_file.close()
+
+            print(f"Made tmp file at {npy_path}")
+
+            #create memmap object
+            npy = np.memmap(npy_path, dtype=data_structure, mode='w+', shape=(time_steps,))
+
+            #save the big parts of the npz to the disk (the tempory npy)
+            #flush after each cos they might be huge
+            npy['positions'] = npz.get("positions")
+            npy.flush()
+            npy['velocities'] = npz.get("velocities")
+            npy.flush()
+            npy["predator_positions"] = npz.get("predator_positions")
+            npy.flush()
+
+
+            #map the dictionary to the npy
+            run_dict["positions"] = npy['positions']
+            run_dict["velocities"] = npy['velocities']
+            run_dict["predator_positions"] = npy['predator_positions']
+            
+            run_dict['memory_map'] = npy_path #truthy anyway
+            
+        else:
+            run_dict["positions"]           = npz.get("positions")
+            run_dict["velocities"]          = npz.get("velocities")
+            run_dict["predator_positions"]  = npz.get("predator_positions")
+            
         for k,v in run_dict.items():
             if type(v) is tuple:
                 run_dict[k] = v[0]

@@ -6,20 +6,71 @@ from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
 from scipy.spatial import KDTree
+import os
+import tempfile
+import gc
 
+TMP_PATH = 'tmp'
 
 class ObservationAndPrediction(ABC):
-    READOUT_TYPES=[
-        'kernels',  #readout kernels
-        'flat',     #flattened state space of the boids
-        'COM',      #center of mass of the boids
-    ]
 
-    def __init__(self,replica1,replica2,washout):
-        self.replica1= replica1
+    def __init__(self,replica1,replica2,washout,chunk_size=5000,cleanup_tmps=True):
+        self.replica1 = replica1
         self.replica2 = replica2
         self.washout_data(washout)
         self.lorenz = replica1.get('predator_positions')
+        
+
+
+        # stuff relating to very large simulations
+        rep1_memmap = replica1.get('memory_map',False)
+        rep2_memmap = replica2.get('memory_map',False)
+
+        self.memory_map = bool(rep1_memmap or rep2_memmap)
+        self.chunk_size=chunk_size
+        
+        self.tmp_paths = []
+
+        if self.memory_map:
+            self.tmp_paths.append(rep1_memmap)
+            self.tmp_paths.append(rep2_memmap)
+
+        if cleanup_tmps: self._cleanup_tmps()
+
+
+
+    def _cleanup_tmps(self):
+        '''
+            - Find a list of tempory files.
+            - Goes through live instances of the ObservationAndPrediction objects, and subtracts any tempfile references from the aformentioned list.
+            - Deletes the remaining tmp files in the list.
+        '''
+        if not os.path.exists(TMP_PATH): return
+        files_in_tmp = os.scandir(TMP_PATH)
+        tmp_files_paths = {os.path.abspath(f.path) for f in files_in_tmp if f.name.endswith('.npy')}
+
+        gc.collect()
+        found_refs = set()
+        found_refs.update(self.tmp_paths)
+        
+        for obj in gc.get_objects():
+            if isinstance(obj, ObservationAndPrediction):
+                for path in obj.tmp_paths:
+                    found_refs.add(path)
+
+        orphans = tmp_files_paths - found_refs
+
+        count = 0
+        for orphan_path in orphans:
+            try:
+                os.remove(orphan_path)
+                count += 1
+            except OSError:
+                print(f"Failed to remove tmp file {orphan_path}, either because its being referenced somewhere or locked.")
+
+        if count > 0:
+            print(f"Cleaned up (deleted) {count} orphaned temporary file(s).")
+    
 
     def washout_data(self,washout):
         def wash(data):
@@ -33,8 +84,97 @@ class ObservationAndPrediction(ABC):
         self.replica2 = wash(self.replica2)
 
     @abstractmethod
-    def get_reservoir_state_vectorised(self,data):
+    def get_reservoir_state_vectorised(self,data,memmap=None):
         pass
+
+    @abstractmethod
+    def calc_consistency_profile(self,sv1,sv2,method):
+        pass
+
+    @staticmethod
+    def _create_mmap(prefix, shape, dtype='float64'):
+        '''
+            returns:
+                - np.memmap object
+                - path to temporary file created
+        '''
+        os.makedirs(TMP_PATH, exist_ok=True)
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, prefix=prefix, suffix='.npy', dir=TMP_PATH)
+        path = tmp_file.name
+        tmp_file.close()
+        print(f"\nMade tmp file at {path}")
+        return np.memmap(path, dtype=dtype, mode='w+', shape=shape), path
+
+    def _sv_mean(self,sv):
+        if self.memory_map:
+            time_steps,features = sv.shape
+            total_sum = np.zeros(features, dtype='float64')
+
+            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size, time_steps)
+                
+                sv_chunk = sv[chunk_start:chunk_end]
+
+                chunk_sum = np.sum(sv_chunk,axis=0)
+
+                total_sum += chunk_sum
+
+            return total_sum / time_steps
+        else:
+            return np.mean(sv,axis=0)
+
+    def _covariance(self,sv1,sv2=None,center=False):
+        '''
+            Parameters:
+                sv1: 
+                    - state vector with shape (T,F) T samples/timesteps and F features/modes
+                sv2: 
+                    - state vector with shape (T,F) T samples/timesteps and F features/modes
+                    - if sv2 is None, autocovariance is calculated with sv1
+                center:
+                    - True: centers the state vectors using the values found by internal function _sv_mean
+                    - False: assumes the state vectors already have 0 mean
+
+
+            Related methods:
+                - _chunked_covariance 
+        '''
+
+        if sv2 is None:
+            sv2 = sv1
+            if center:
+                sv1_mean = self._sv_mean(sv1)
+                sv2_mean = sv1_mean
+        else:
+            if center:
+                sv1_mean = self._sv_mean(sv1)
+                sv2_mean = self._sv_mean(sv2)
+        if not center:
+            sv1_mean = np.zeros(len(sv1),dtype='float64')
+            sv2_mean = np.zeros(len(sv2),dtype='float64')
+
+
+        if self.memory_map:
+            time_steps,feats1 = sv1.shape
+            _, feats2 = sv2.shape
+
+            covariances = np.zeros((feats1, feats2), dtype='float64')
+
+            for chunk_start in trange(0,time_steps,self.chunk_size):
+                chunk_end = min(chunk_start+self.chunk_size, time_steps)
+
+                sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
+                sv2_chunk_centered = sv2[chunk_start:chunk_end] - sv2_mean
+
+                covariances += (sv1_chunk_centered.T @ sv2_chunk_centered)
+
+            return covariances / (time_steps-1)
+        else:
+            sv1_centered = sv1-sv1_mean
+            sv2_centered = sv2-sv2_mean
+            
+            time_steps = sv1_centered.shape[0]
+            return (sv1_centered.T @ sv2_centered) / (time_steps-1)
 
     def _get_lorenz_targets(self,futures,start=0,end=None):
         '''
@@ -45,10 +185,21 @@ class ObservationAndPrediction(ABC):
         lorenz_x = self.lorenz[start:end,0]
         return lorenz_x[futures:]
 
-    def ridge_prediction(self,replica,ridge_beta=0.1,traintest_split=0.6,prediction_distance=1):
-        split_idx = int(len(replica)*traintest_split)
-        state_training = replica[:split_idx]
-        state_testing = replica[split_idx:]
+    def ridge_prediction(self,state_vector,ridge_beta=0.1,traintest_split=0.6,prediction_distance=1):
+        """
+            Parameters:
+                replica (np.ndarray): one of the replica objects inside the obj either obj.replica1 or obj.replica2 
+                ridge_beta (float): alpha 
+                traintest_split (float): fraction of data used for testing
+                prediction_distance (int): time steps into the future you want the replica to attempt to predict
+
+            Returns:
+                prediction (np.ndarray): array shape (N) where N is time_steps and each index is the predicted lorenz x positions at said timestep.
+                corr_coef (float): the correlation coefficiant found against the prediction and the test split.
+        """
+        split_idx = int(len(state_vector)*traintest_split)
+        state_training = state_vector[:split_idx]
+        state_testing = state_vector[split_idx:]
 
         x_train = state_training[:-prediction_distance]
         y_train = self._get_lorenz_targets(prediction_distance,end=split_idx)
@@ -64,13 +215,12 @@ class ObservationAndPrediction(ABC):
 
         prediction = ridge.predict(x_test)
 
-        numer = np.mean(y_test*prediction,axis=0)
-        denom = np.sqrt( np.mean(y_test**2,axis=0) * np.mean(prediction**2,axis=0))
-        corr_coef = numer/denom
+        corr_coef = np.corrcoef(y_test,prediction)[0,1]
+        return prediction, corr_coef
 
-        return prediction,corr_coef
+    def plot_ridge_prediction(self,prediction,corr_coef,x_range,pop_out=False):
 
-    def get_plot(self,prediction,corr_coef,x_range,pop_out=False):
+
         lorenz_x = self.lorenz[:,0]
 
         fig, ax = plt.subplots(figsize=(20, 6))
@@ -109,17 +259,6 @@ class ObservationAndPrediction(ABC):
             ax.set_xlim(x_range)
 
         return ax
-
-    def _calc_covariance(self,vector1,vector2,center:bool):
-        if center:
-            vector1 = vector1 - np.mean(vector1,axis=0)
-            vector2 = vector2 - np.mean(vector2,axis=0)
-            assert np.allclose(np.mean(vector1, axis=0), 0, atol=1e-7), "vector1 doesn't have 0 mean"
-            assert np.allclose(np.mean(vector2, axis=0), 0, atol=1e-7), "vector2 doesn't have 0 mean"
-
-        time_steps = vector1.shape[0]
-        cov = (vector1.T@vector2)/time_steps
-        return cov
     
     def _calc_norm_transform(self,Q,eigen_values):
         """
@@ -134,10 +273,6 @@ class ObservationAndPrediction(ABC):
         eig_inv_sqrt = 1/np.sqrt(eigen_values)
         Sigma_inv = np.diagflat(eig_inv_sqrt)
         return Q @ Sigma_inv @ Q.T
-    
-    @abstractmethod
-    def calc_consistency_profile(self,sv1,sv2):
-        pass
 
     def plot_consistency_profile(self,consistent_capacity=None,gamma2_vector=None,truncated_to=100,show_consistent_capacity=True,dpi=200):
         if consistent_capacity is None or gamma2_vector is None:
@@ -170,8 +305,8 @@ class ObservationAndPrediction(ABC):
 
 
 class KernelReadout(ObservationAndPrediction):
-    def __init__(self,kernel_number,replica1,replica2,washout):
-        super().__init__(replica1,replica2,washout)
+    def __init__(self,replica1,replica2,kernel_number,washout,chunk_size):
+        super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
 
@@ -208,22 +343,29 @@ class KernelReadout(ObservationAndPrediction):
 
         return np.array(centers),np.array(widths)
     
-    def get_reservoir_state_vectorised(self, run, chunk_size=1000):
+    def get_reservoir_state_vectorised(self, run):
         positions = run['positions']
         velocities = run['velocities']
-        T = len(positions)
         
+        time_steps = positions.shape[0]
+        kernels = self.kernel_number
+        features = kernels*3 #x3 because 3 readouts occur as specified in the paper
+
         centers = self.centers
         widths = self.widths
         c_sq = np.sum(centers**2, axis=1)
-
-        chunk_starts = list(range(0, T, chunk_size))
         
-        r1 = []
-        r2 = []
-        r3 = []
+        if self.memory_map:
+            npy, npy_path = self._create_mmap('kernel_readout_',(time_steps,features))
+            self.tmp_paths.append(npy_path)
+        
+        chunk_starts = list(range(0, time_steps, self.chunk_size))
+
+        r1_t = []
+        r2_t = []
+        r3_t = []
         for start in tqdm(chunk_starts, desc="Serial Chunks"):
-            chunk_end = min(start + chunk_size, T)
+            chunk_end = min(start + self.chunk_size, time_steps)
 
             #of this chunk
             pos_c = positions[start:chunk_end]
@@ -240,21 +382,35 @@ class KernelReadout(ObservationAndPrediction):
 
             psi = np.exp(-e_numer / e_denom)
 
-            r1.append(np.sum(psi, axis=1))
-            r2.append(np.sum(psi * velx_c, axis=1))
-            r3.append(np.sum(psi * vely_c, axis=1))
+            r1 = np.sum(psi, axis=1)
+            r2 = np.sum(psi * velx_c, axis=1)
+            r3 = np.sum(psi * vely_c, axis=1)
 
-        r1 = np.vstack(r1)
-        r2 = np.vstack(r2)
-        r3 = np.vstack(r3)
-        return np.concatenate([r1, r2, r3], axis=1)
+            if self.memory_map:
+                #since features are a vector, below indexs the vector ranges 0-199 is r1 readout, 200-399 is r2, 400-600 is r3
+                npy[start:chunk_end,0:kernels] = r1
+                npy[start:chunk_end,kernels:kernels*2] = r2
+                npy[start:chunk_end,kernels*2:kernels*3] = r3
+            else:
+                r1_t.append(r1)
+                r2_t.append(r2)
+                r3_t.append(r3)
 
-    def calc_consistency_profile(self,sv1,sv2):
+        if self.memory_map:
+            npy.flush()
+            return npy
+        else:
+            r1_t = np.vstack(r1)
+            r2_t = np.vstack(r2)
+            r3_t = np.vstack(r3)
+            return np.concatenate([r1_t, r2_t, r3_t], axis=1)
+
+    def v1(self,sv1,sv2):
         '''
             this version of the consistency profile attempts to expand on the methods as exactly described in lymburn.
             This is because the entirely faithful implementation doesn't produce similar consistancy profiles
         '''
-
+        
         sv1 = sv1 - np.mean(sv1,axis=0)
         sv2 = sv2 - np.mean(sv2,axis=0)
 
@@ -316,7 +472,7 @@ class KernelReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma2
 
-    def calc_consistency_profile_v1(self, sv1,sv2):
+    def faithful(self,sv1,sv2):
         '''
             this is the most faithful implementaiton of what was described in the paper
 
@@ -324,8 +480,7 @@ class KernelReadout(ObservationAndPrediction):
 
             The code below can be simplified using other np feautures but being verbose for readability and proof of implementation
         '''
-
-
+        
         '''
             "responses may be labeled x(t) and x′(t) and are assumed to have zero mean"
         '''
@@ -339,7 +494,6 @@ class KernelReadout(ObservationAndPrediction):
         '''
         time_steps = x1.shape[0]-1 #number of samples
         Cxx = (x1.T@x1) / time_steps
-
 
         '''
             "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
@@ -407,17 +561,45 @@ class KernelReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma_squared
 
+    def calc_consistency_profile(self,sv1,sv2, method:str):
+        options = [self.faithful.__name__,self.v1.__name__]
+
+        if method not in options:
+            raise Exception(f"Available methods for KernelReadout are {options}")
+        else:
+            method = self.__getattribute__(method)
+
+        return method(sv1,sv2)
+
+
 class FlatReadout(ObservationAndPrediction):
     
-    def __init__(self,replica1,replica2,washout):
-        super().__init__(replica1,replica2,washout)
+    def __init__(self,replica1,replica2,washout,chunk_size):
+        super().__init__(replica1,replica2,washout,chunk_size)
     
     def get_reservoir_state_vectorised(self, data):
         x = data['positions']
+
+        time_steps,num_boids,_ = x.shape
+        features = num_boids*2 #x and y positions
+
+        if self.memory_map:
+            npy, npy_path = self._create_mmap('flat_readout_',(time_steps,features))
+            self.tmp_paths.append(npy_path)
+
+            chunk_starts = range(0, time_steps, self.chunk_size)
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                chunk_end = min(chunk_start + self.chunk_size, time_steps)
+                chunk_data = x[chunk_start:chunk_end]
+                npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
+
+            npy.flush()
+            return npy
+
         pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
         return pos_flattened
     
-    def calc_consistency_profile(self, sv1, sv2):
+    def faithful(self, sv1, sv2):
         '''
             implements the equations outlined in the appendix A1-A4
         '''
@@ -455,3 +637,21 @@ class FlatReadout(ObservationAndPrediction):
         assert np.allclose(consistent_capacity,np.sum(gamma_squared))
 
         return consistent_capacity,gamma_squared
+    
+    def v1(self,sv1,sv2):
+        '''
+            this version of the consistency profile calculation is attempting to implement the techniques discussed
+            in the second part of the appendix. Specifically, "use[ing] the known structure of the system to improve 
+            the efficiency of calculating its consistency profile."
+        '''
+        pass
+
+    def calc_consistency_profile(self,sv1,sv2, method:str):
+        options = [self.faithful.__name__,self.v1.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
+
+        if method not in options:
+            raise Exception(f"Available methods for KernelReadout are {options}")
+        else:
+            method = self.__getattribute__(method)
+
+        return method(sv1,sv2)
