@@ -3,6 +3,7 @@ images
 __pycache__
 tests/**/*
 
+notes-to-self.txt
 /**/**/**/.DS_Store
 /**/.DS_Store
 .DS_Store
