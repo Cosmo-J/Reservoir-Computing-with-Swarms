@@ -2,6 +2,7 @@ Created in effort to recreate the methods of [Lymburn et al 2021](https://resear
 
 This Python package provides a framework for simulating, visualising, and analyzing **Boid Swarm Dynamics**, specifically integrated with **Lorenz System** interactions where a predator follows chaotic trajectories. It also includes advanced tools for **Reservoir Computing** analysis, allowing for the prediction of chaotic systems based on swarm states.
 
+You may also see examples for performing data analysis and readouts in `examples.ipynb`.
 ---
 
 ## Overview
