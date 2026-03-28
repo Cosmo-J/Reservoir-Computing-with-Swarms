@@ -19,7 +19,6 @@ class ObservationAndPrediction(ABC):
         self.replica2 = replica2
         self.washout_data(washout)
         self.lorenz = replica1.get('predator_positions')
-        
 
 
         # stuff relating to very large simulations
@@ -36,7 +35,6 @@ class ObservationAndPrediction(ABC):
             self.tmp_paths.append(rep2_memmap)
 
         if cleanup_tmps: self._cleanup_tmps()
-
 
 
     def _cleanup_tmps(self):
@@ -70,26 +68,29 @@ class ObservationAndPrediction(ABC):
 
         if count > 0:
             print(f"Cleaned up (deleted) {count} orphaned temporary file(s).")
-    
+
 
     def washout_data(self,washout):
         def wash(data):
-            data['positions'] = data.get('positions')[washout:]
-            data['velocities'] = data.get('velocities')[washout:]
-            data['predator_positions']= data.get('predator_positions')[washout:]
+            data['positions'] = data['positions'][washout:]
+            data['velocities'] = data['velocities'][washout:]
+            data['predator_positions']= data['predator_positions'][washout:]
             data['time_steps']= data.get('time_steps') - washout
             return data
         
         self.replica1 = wash(self.replica1)
         self.replica2 = wash(self.replica2)
 
+
     @abstractmethod
     def get_reservoir_state_vectorised(self,data,memmap=None):
         pass
 
+
     @abstractmethod
     def calc_consistency_profile(self,sv1,sv2,method):
         pass
+
 
     @staticmethod
     def _create_mmap(prefix, shape, dtype='float64'):
@@ -105,7 +106,8 @@ class ObservationAndPrediction(ABC):
         print(f"\nMade tmp file at {path}")
         return np.memmap(path, dtype=dtype, mode='w+', shape=shape), path
 
-    def _sv_mean(self,sv):
+
+    def _mean(self,sv):
         if self.memory_map:
             time_steps,features = sv.shape
             total_sum = np.zeros(features, dtype='float64')
@@ -122,6 +124,55 @@ class ObservationAndPrediction(ABC):
             return total_sum / time_steps
         else:
             return np.mean(sv,axis=0)
+
+
+    def _center(self,sv):
+        if self.memory_map:
+            time_steps,features = sv.shape
+            total_sum = np.zeros(features,dtype='float64')
+
+            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+                sv_chunk = sv[chunk_start:chunk_end]
+                chunk_sum = np.sum(sv_chunk,axis=0)
+                total_sum += chunk_sum
+
+            sv_mean = total_sum / time_steps
+
+            sv_centered_npy, npy_path = self._create_mmap('sv_centered_',(time_steps,features))
+            self.tmp_paths.append(npy_path)
+
+            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+                sv_chunk = sv[chunk_start:chunk_end]
+                chunk_centered = sv_chunk-sv_mean
+                sv_centered_npy[chunk_start:chunk_end] = chunk_centered
+                sv_centered_npy.flush()
+
+            return sv_centered_npy
+        else:
+            return sv - np.mean(sv,axis=0)
+
+
+    def _sv_transform(self,sv,transform):
+        '''
+            matrix multiplication which will do it chunked if memory_map is true
+        '''
+        if self.memory_map:
+            time_steps, features = sv.shape
+            mat_mul_out, npy_path = self._create_mmap('mat_mul_', (time_steps, features))
+            self.tmp_paths.append(npy_path)
+
+            for chunk_start in trange(0,time_steps,self.chunk_size,desc="Chunked matrix multiplication"):
+                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+
+                mat_mul_out[chunk_start:chunk_end] = sv[chunk_start:chunk_end] @ transform
+        
+            mat_mul_out.flush()
+            return mat_mul_out
+        else:
+            return sv @ transform
+
 
     def _covariance(self,sv1,sv2=None,center=False):
         '''
@@ -143,15 +194,15 @@ class ObservationAndPrediction(ABC):
         if sv2 is None:
             sv2 = sv1
             if center:
-                sv1_mean = self._sv_mean(sv1)
+                sv1_mean = self._mean(sv1)
                 sv2_mean = sv1_mean
         else:
             if center:
-                sv1_mean = self._sv_mean(sv1)
-                sv2_mean = self._sv_mean(sv2)
+                sv1_mean = self._mean(sv1)
+                sv2_mean = self._mean(sv2)
         if not center:
-            sv1_mean = np.zeros(len(sv1),dtype='float64')
-            sv2_mean = np.zeros(len(sv2),dtype='float64')
+            sv1_mean = np.zeros(sv1.shape[1],dtype='float64')
+            sv2_mean = np.zeros(sv2.shape[1],dtype='float64')
 
 
         if self.memory_map:
@@ -160,7 +211,7 @@ class ObservationAndPrediction(ABC):
 
             covariances = np.zeros((feats1, feats2), dtype='float64')
 
-            for chunk_start in trange(0,time_steps,self.chunk_size):
+            for chunk_start in trange(0,time_steps,self.chunk_size,desc="Chunked Covariance"):
                 chunk_end = min(chunk_start+self.chunk_size, time_steps)
 
                 sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
@@ -176,6 +227,7 @@ class ObservationAndPrediction(ABC):
             time_steps = sv1_centered.shape[0]
             return (sv1_centered.T @ sv2_centered) / (time_steps-1)
 
+
     def _get_lorenz_targets(self,futures,start=0,end=None):
         '''
             Params:
@@ -184,6 +236,7 @@ class ObservationAndPrediction(ABC):
         '''
         lorenz_x = self.lorenz[start:end,0]
         return lorenz_x[futures:]
+
 
     def ridge_prediction(self,state_vector,ridge_beta=0.1,traintest_split=0.6,prediction_distance=1):
         """
@@ -217,6 +270,7 @@ class ObservationAndPrediction(ABC):
 
         corr_coef = np.corrcoef(y_test,prediction)[0,1]
         return prediction, corr_coef
+
 
     def plot_ridge_prediction(self,prediction,corr_coef,x_range,pop_out=False):
 
@@ -259,7 +313,8 @@ class ObservationAndPrediction(ABC):
             ax.set_xlim(x_range)
 
         return ax
-    
+
+
     def _calc_norm_transform(self,Q,eigen_values):
         """
             Parameters:
@@ -273,6 +328,7 @@ class ObservationAndPrediction(ABC):
         eig_inv_sqrt = 1/np.sqrt(eigen_values)
         Sigma_inv = np.diagflat(eig_inv_sqrt)
         return Q @ Sigma_inv @ Q.T
+
 
     def plot_consistency_profile(self,consistent_capacity=None,gamma2_vector=None,truncated_to=100,show_consistent_capacity=True,dpi=200):
         if consistent_capacity is None or gamma2_vector is None:
@@ -305,10 +361,11 @@ class ObservationAndPrediction(ABC):
 
 
 class KernelReadout(ObservationAndPrediction):
-    def __init__(self,replica1,replica2,kernel_number,washout,chunk_size):
+    def __init__(self,kernel_number,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
+
 
     def generate_kernels(self):
         '''
@@ -343,6 +400,7 @@ class KernelReadout(ObservationAndPrediction):
 
         return np.array(centers),np.array(widths)
     
+
     def get_reservoir_state_vectorised(self, run):
         positions = run['positions']
         velocities = run['velocities']
@@ -404,6 +462,7 @@ class KernelReadout(ObservationAndPrediction):
             r2_t = np.vstack(r2)
             r3_t = np.vstack(r3)
             return np.concatenate([r1_t, r2_t, r3_t], axis=1)
+
 
     def v1(self,sv1,sv2):
         '''
@@ -472,6 +531,7 @@ class KernelReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma2
 
+
     def faithful(self,sv1,sv2):
         '''
             this is the most faithful implementaiton of what was described in the paper
@@ -483,17 +543,19 @@ class KernelReadout(ObservationAndPrediction):
         
         '''
             "responses may be labeled x(t) and x′(t) and are assumed to have zero mean"
+                this is why I center when calculating the covariance
         '''
-        x1 = sv1 - np.mean(sv1,axis=0)
-        x2 = sv2 - np.mean(sv2,axis=0)
-
+        x1 = self._center(sv1)
+        x2 = self._center(sv2)
 
         '''
             "First, the covariance matrix is calculated as 
                 [Cxx]ij =〈xi(t) xj(t)"
+
+            center seperatly here for optimisation reasons
         '''
-        time_steps = x1.shape[0]-1 #number of samples
-        Cxx = (x1.T@x1) / time_steps
+
+        Cxx = self._covariance(sv1,center=True)
 
         '''
             "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
@@ -531,13 +593,13 @@ class KernelReadout(ObservationAndPrediction):
 
         '''
         # swapped the term position to properly match the shapes
-        X1o = x1 @ To
-        X2o = x2 @ To
+        X1o = self._sv_transform(x1,To)
+        X2o = self._sv_transform(x2,To)
 
         '''
             "cross-covariance matrix of the two replicas [Css]ij = 〈s◦,i(t)s◦,j(t)〉 = 〈x◦,i(t)x'◦,j(t)〉."
         '''
-        Css = (X1o.T @ X2o) /  X2o.shape[0]
+        Css = self._covariance(X1o,X2o,center=False)
 
 
         '''
@@ -561,6 +623,7 @@ class KernelReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma_squared
 
+
     def calc_consistency_profile(self,sv1,sv2, method:str):
         options = [self.faithful.__name__,self.v1.__name__]
 
@@ -573,10 +636,10 @@ class KernelReadout(ObservationAndPrediction):
 
 
 class FlatReadout(ObservationAndPrediction):
-    
     def __init__(self,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
     
+
     def get_reservoir_state_vectorised(self, data):
         x = data['positions']
 
@@ -599,6 +662,7 @@ class FlatReadout(ObservationAndPrediction):
         pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
         return pos_flattened
     
+ 
     def faithful(self, sv1, sv2):
         '''
             implements the equations outlined in the appendix A1-A4
@@ -638,6 +702,7 @@ class FlatReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma_squared
     
+ 
     def v1(self,sv1,sv2):
         '''
             this version of the consistency profile calculation is attempting to implement the techniques discussed
@@ -646,6 +711,7 @@ class FlatReadout(ObservationAndPrediction):
         '''
         pass
 
+ 
     def calc_consistency_profile(self,sv1,sv2, method:str):
         options = [self.faithful.__name__,self.v1.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
 
