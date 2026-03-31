@@ -24,7 +24,7 @@ class BoidSimulator:
         else: 
             np.random.seed(1)
         
-## Forces
+    ## Forces
     def __repulsion_force(self,boid,neis_x):
         """ 
             boid is an np.array(2) [x,y] of a given boid
