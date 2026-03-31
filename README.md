@@ -167,7 +167,7 @@ Note that some of these dictionary items are fairly redundant and only exist for
 
 
 #### Analysing Simulations
-Simulations can be analysed using `ObservationLayer` which defines classes for getting readouts from a reservoir. Included is `FlatReadout` and `KernelReadout` which are different classes for reading the reservoir described in [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). Additionally, the a superclass `ObservationAndPrediction` is included from which the two aforementioned readout classes extend. This exists for users who may want to define their own subclass which defines a specific methodology for reading reservoir states.
+Simulations can be analysed using `ObservationLayer` which defines classes for getting readouts from a reservoir. Included is `NaiveReadout`, `KernelReadout`, `COMReadout` which are different classes for observing the reservoir described in [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). Additionally, the a superclass `ObservationAndPrediction` is included from which the two aforementioned readout classes extend. This exists for users who may want to define their own subclass which defines a specific methodology for reading reservoir states.
 
 Below shows some examples of these classes being used:
 ```python

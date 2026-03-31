@@ -22,7 +22,9 @@ class ObservationAndPrediction(ABC):
         See Also
         --------
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
-        `FlatReadout` : Subclass which is used to perform a naive readout.
+        `NaiveReadout` : Subclass which is used to perform a naive readout.
+        `COMReadout` : Subclass which is used to perform a center of mass readout.
+
 
 
         Parameters
@@ -688,7 +690,8 @@ class KernelReadout(ObservationAndPrediction):
         See Also
         --------
         `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
-        `FlatReadout` : Subclass which is used to perform a naive readout.
+        `NaiveReadout` : Subclass which is used to perform a naive readout.
+        `COMReadout` : Subclass which is used to perform a center of mass readout.
 
 
         Parameters
@@ -1057,7 +1060,22 @@ class KernelReadout(ObservationAndPrediction):
         return methodology(sv1,sv2)
 
 
-class FlatReadout(ObservationAndPrediction):
+class NaiveReadout(ObservationAndPrediction):
+    """
+        Subclass of `ObservationAndPrediction`. 
+        
+        _"first considering the naïve approach of taking the two position coordinates 
+        of the N agents in the swarm and forming a 2N node reservoir."_ - Lymburn et al
+
+        Only support analysis between two replicas of a simulation.
+
+        See Also
+        --------
+        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
+        `COMReadout` : Subclass which is used to perform a center of mass readout.
+    """
+
     def __init__(self,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
     
@@ -1138,6 +1156,99 @@ class FlatReadout(ObservationAndPrediction):
 
     def calc_consistency_profile(self,sv1,sv2, methodology:str):
         options = [self.faithful.__name__,self.v1.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
+
+        if methodology not in options:
+            raise Exception(f"Available methods for KernelReadout are {options}")
+        else:
+            methodology = self.__getattribute__(methodology)
+
+        return methodology(sv1,sv2)
+    
+
+class COMReadout(ObservationAndPrediction):
+    """
+        Subclass of `ObservationAndPrediction`. 
+        
+        _"we compare the performance of the full swarm reservoir and one made out of the two CoM coordinates only"_ - Lymburn et al
+
+        Only support analysis between two replicas of a simulation.
+
+        See Also
+        --------
+        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
+        `NaiveReadout` : Subclass which is used to perform a naive readout.
+    """
+    
+    def __init__(self,replica1,replica2,washout,chunk_size):
+        super().__init__(replica1,replica2,washout,chunk_size)
+    
+    def get_reservoir_state_vectorised(self, replica):
+        x = replica['positions']
+
+        time_steps,num_boids,_ = x.shape
+        features = num_boids*2 #x and y positions
+
+        if self.memory_map:
+            npy, npy_path = self._create_mmap('flat_readout_',(time_steps,features))
+            self.tmp_paths.append(npy_path)
+
+            chunk_starts = range(0, time_steps, self.chunk_size)
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                chunk_end = min(chunk_start + self.chunk_size, time_steps)
+
+
+                chunk_data = x[chunk_start:chunk_end]
+                npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
+
+            npy.flush()
+            return npy
+        
+        else:
+            pos_flattened = np.mean(x,axis=1)
+            return pos_flattened
+    
+    def faithful(self, sv1, sv2):
+        '''
+            implements the equations outlined in the appendix A1-A4
+        '''
+        time_steps,modes = sv1.shape
+
+        #force them to have zero mean
+        x1 = sv1 - np.mean(sv1,axis=0)
+        x2 = sv2 - np.mean(sv2,axis=0)
+
+        assert np.allclose(np.mean(x1),np.mean(x2))
+
+        #x1 autocovariance
+        cxx = (x1.T@x1)/ time_steps
+
+        # "To ensure numerical stability, we add a small regularization term"
+        cxx_reg = cxx + (1e-9 * np.eye(modes))
+
+        #transform for normalising readout
+        eigenvalues, eigenvectors = np.linalg.eigh(cxx_reg)
+        inverse_sigma = np.diagflat(1/np.sqrt(eigenvalues))
+
+        To = eigenvectors @ inverse_sigma @ eigenvectors.T
+
+        #apply transform
+        x1o = x1 @ To
+        x2o = x2 @ To
+
+        #calculate cross covariance matrix
+        cxx = (x1o.T @ x2o)/time_steps
+        print(cxx.shape)
+
+        #retrieve eigenvalues (where gamma squared is stated to be the same thing)
+        gamma_squared = np.linalg.eigvals(cxx)
+        consistent_capacity = np.trace(cxx)
+        assert np.allclose(consistent_capacity,np.sum(gamma_squared))
+
+        return consistent_capacity,gamma_squared
+    
+    def calc_consistency_profile(self,sv1,sv2, methodology:str):
+        options = [self.faithful.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
 
         if methodology not in options:
             raise Exception(f"Available methods for KernelReadout are {options}")
