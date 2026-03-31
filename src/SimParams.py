@@ -1,5 +1,5 @@
 import configparser
-
+import os
 class SimParams:
     DEFAULTS = {
             # Simulation params
@@ -95,7 +95,21 @@ class SimParams:
                     self.params[k] = v
         return self.params
     
-    def write_default_ini(self,path):
+    def write_default_ini(self,path,name='config.ini'):
+        split = name.split('.')
+        print(split)
+        if len(split) == 2:
+            if name.endswith('.ini'):
+                name_val = name
+            else:
+                raise TypeError(f"{name} is not a valid extension for the config file. Must be a .ini or dont specify and .ini will be added automatically.")
+        elif len(split) > 2:
+            raise TypeError(f"{name} - invalid extension. Probably too many dots.")
+        else:
+            name_val = name + '.ini'
+        
+        ini_dir = os.path.join(path, name_val)
+
         cfg = configparser.ConfigParser()
         for section_title,section in self.DEFAULTS.items():
             cfg[section_title] = {}
@@ -103,5 +117,5 @@ class SimParams:
                 cfg[section_title][k] = str(v)
         
         
-        with open(path,'w',encoding="utf-8") as f:
+        with open(ini_dir,'w',encoding="utf-8") as f:
             cfg.write(f)

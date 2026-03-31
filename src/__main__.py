@@ -14,12 +14,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,                 help="Run a simulation given a .ini file path of parameters.")
 parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                  help="Number of times you want the simulation to be run.")
 parser.add_argument('--seed',                   type=int,   nargs='?', const=1,                    help="Give a random seed to produce identical runs. Default seed is '1'.")
-parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="generate an empty .ini with default parameters.")
+parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="Give a file path to generate an empty .ini with default parameters there.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,                 help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,                help="If iterations is more than 1, use to specify the directory in which a run is saved. Otherwise it can be used to choose a specific save name")
 parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="When running multiple iterations, set true to enable multithreading")
 
-DEFAULT_SAVE_PATH = 'tests/default_test_case'
+DEFAULT_SAVE_PATH = 'tests/'
 def main(custom_args=None):
     os.makedirs(DEFAULT_SAVE_PATH, exist_ok=True)
     #below accounts for main being called by other scripts, where custom args is a custom object
@@ -40,9 +40,7 @@ def main(custom_args=None):
         if target_dir == './':
             target_dir = DEFAULT_SAVE_PATH
 
-        out_path = os.path.join(target_dir, "default_params.ini")
-        print(f'Generating new parameters file at {out_path}')
-        ParamManager.write_default_ini(out_path)
+        ParamManager.write_default_ini(target_dir)
         return
 
 
