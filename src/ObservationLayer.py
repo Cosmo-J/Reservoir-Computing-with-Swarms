@@ -78,7 +78,6 @@ class ObservationAndPrediction(ABC):
 
         same_params, table = ConfigManager.compare_params(replica1.get('config').item(),replica2.get('config').item())
         assert same_params==True, "Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table
-        
         assert np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')), "Replicas have different predator positions"
 
         # stuff relating to very large simulations
