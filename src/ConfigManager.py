@@ -55,7 +55,7 @@ GLOBAL_DEFAULTS = {
             }
     }
 
-class SimParams:
+class ConfigManager:
     DEFAULTS = GLOBAL_DEFAULTS
 
     def __init__(self):
@@ -72,15 +72,8 @@ class SimParams:
                 flat[k] = v
         return flat
     
-    def load_params_from_ini(self,path):#also used to load from defaults
-        # some sort of path validation to ensure that
-        '''
-            1. path exists
-            2. ini exists
-            3. ini is up to date
-                if not, add the new rows and give them the default values
-        '''
 
+    def load_params_from_ini(self,path):
         if not path.endswith('.ini'):
             raise TypeError('Expected path to .ini file. e.g. PATH/TO/INI.ini')
 

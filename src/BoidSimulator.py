@@ -7,29 +7,16 @@ import threading
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
 from .SimSaverLoader import SimSaverLoader
-from .SimParams import SimParams
+from .ConfigManager import ConfigManager
 
 
 EPS =1e-12 # used for avoiding divide by 0
 
 
 class BoidSimulator:
-    def initialise(self,param_loader:SimParams= None, sim_saver_loader:SimSaverLoader=None):
-        '''
-            sets and or creates a SimParms and SimSaverLoader object for the BoidSimulator
-        '''
-        if param_loader is None:
-            param_loader = SimParams()
-        if sim_saver_loader is None:
-            sim_saver_loader = SimSaverLoader()
+    def __init__(self,param_loader:ConfigManager):
+        self.p = param_loader.params
 
-        self.param_loader = param_loader
-        self.saver_loader = sim_saver_loader
-
-        return param_loader,sim_saver_loader
-
-    def PARAMS(self):
-        return self.param_loader.params
 
     def set_seed(self,seed):
         if isinstance(seed,int): 
@@ -60,18 +47,18 @@ class BoidSimulator:
         return force
 
     def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
-        if self.PARAMS()['COORD_SYSTEM']=='torus':
-            width = self.PARAMS()['SIM_WIDTH']
+        if self.p['COORD_SYSTEM']=='torus':
+            width = self.p['SIM_WIDTH']
             if len(neis_x)==0:
                 return np.zeros(2)
             
-            angles = (neis_x / self.PARAMS()['SIM_WIDTH']) * 2 * np.pi
+            angles = (neis_x / self.p['SIM_WIDTH']) * 2 * np.pi
             mean_cos = np.mean(np.cos(angles),axis=0)
             mean_sin = np.mean(np.sin(angles),axis=0)
 
             mean_angle = np.arctan2(mean_sin,mean_cos)
             
-            target = ((mean_angle / (2 * np.pi)) % 1.0) * self.PARAMS()['SIM_WIDTH']
+            target = ((mean_angle / (2 * np.pi)) % 1.0) * self.p['SIM_WIDTH']
             diff = target - boid
             diff = (diff + width/2) % width - width/2
             return diff
@@ -80,7 +67,7 @@ class BoidSimulator:
 
     def __friction_force(self,boid_v):
         speed = np.hypot(boid_v[0],boid_v[1])
-        return -boid_v * ((speed - self.PARAMS()['K_SPEED']) / self.PARAMS()['K_SPEED'])
+        return -boid_v * ((speed - self.p['K_SPEED']) / self.p['K_SPEED'])
 
     def __predator_force(self,boid_x,pred_x):
         if pred_x is None: return np.array([0.0,0.0])
@@ -88,7 +75,7 @@ class BoidSimulator:
 
         
         # this 'if else' is the heaviside function
-        if(d<=self.PARAMS()['RAD_PREDATOR']):
+        if(d<=self.p['RAD_PREDATOR']):
             denom = d**2
             numer = boid_x-pred_x
             return (numer/denom+EPS)
@@ -97,33 +84,33 @@ class BoidSimulator:
 
     def __total_force(self, boid_x, boid_v, a_neighbours, r_neighbours, h_neighbours, pred_x=None):
 
-        no_lorenz = 1 if self.PARAMS()['PREDATOR'] else 0 #if lorenz is disabled in the params
+        no_lorenz = 1 if self.p['PREDATOR'] else 0 #if lorenz is disabled in the params
     #           |-coefficent-----------------|-force--------------------|-force-params---------|
-        force = ((self.PARAMS()['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
-                (self.PARAMS()['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
-                (self.PARAMS()['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
-                (self.PARAMS()['K_FRICTION']  *  self.__friction_force  (boid_v))              +
-                (self.PARAMS()['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x)*no_lorenz ))       
+        force = ((self.p['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
+                (self.p['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
+                (self.p['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
+                (self.p['K_FRICTION']  *  self.__friction_force  (boid_v))              +
+                (self.p['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x)*no_lorenz ))       
 
         # sigmoidal function
-        force_sigmoid = self.PARAMS()['ALPHA'] * np.tanh(self.PARAMS()['BETA'] * force)
+        force_sigmoid = self.p['ALPHA'] * np.tanh(self.p['BETA'] * force)
 
         return force_sigmoid
 
     def __force_matrix(self,boid_xs,boid_vs,pred_x=None):
         forces = np.empty((len(boid_xs),2))
 
-        if self.PARAMS()['COORD_SYSTEM'] == 'flat':
+        if self.p['COORD_SYSTEM'] == 'flat':
             tree_points = boid_xs
             tree = KDTree(tree_points)
 
-        elif self.PARAMS()['COORD_SYSTEM'] == 'torus':
+        elif self.p['COORD_SYSTEM'] == 'torus':
             tree_points = self.__lorenz_wrap(boid_xs)
-            tree = KDTree(tree_points, boxsize=self.PARAMS()['SIM_WIDTH'])
+            tree = KDTree(tree_points, boxsize=self.p['SIM_WIDTH'])
             
-        align_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_ALIGNMENT'])
-        repul_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_REPULSION'])
-        homing_lists = tree.query_ball_point(tree_points,r=self.PARAMS()['RAD_HOMING'])
+        align_lists = tree.query_ball_point(tree_points,r=self.p['RAD_ALIGNMENT'])
+        repul_lists = tree.query_ball_point(tree_points,r=self.p['RAD_REPULSION'])
+        homing_lists = tree.query_ball_point(tree_points,r=self.p['RAD_HOMING'])
 
         # this is iterating through each boid and applying its force
         for i, (x,v) in enumerate(zip(boid_xs,boid_vs)):
@@ -148,9 +135,9 @@ class BoidSimulator:
 
     def __lorenz_equations(self,t,start_states):
         x,y,z = start_states
-        dxBYdt = self.PARAMS()['L_SIGMA'] * (y-x)
-        dyBYdt = x * (self.PARAMS()['L_RHO'] - z) - y
-        dzBYdt = (x * y) - (self.PARAMS()['L_BETA'] * z)
+        dxBYdt = self.p['L_SIGMA'] * (y-x)
+        dyBYdt = x * (self.p['L_RHO'] - z) - y
+        dzBYdt = (x * y) - (self.p['L_BETA'] * z)
         return dxBYdt,dyBYdt,dzBYdt
 
     def __generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
@@ -174,10 +161,10 @@ class BoidSimulator:
         spawn_max = max(spawn_bounds)
         spawn_width = np.abs(spawn_max-spawn_min)
 
-        if self.PARAMS()['COORD_SYSTEM']=='flat':
+        if self.p['COORD_SYSTEM']=='flat':
             x = spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
-        elif self.PARAMS()['COORD_SYSTEM']=='torus':
-            x = self.PARAMS()['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
+        elif self.p['COORD_SYSTEM']=='torus':
+            x = self.p['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
 
         if random_velocity: 
             v=np.random.rand(flock_size,2)
@@ -192,7 +179,7 @@ class BoidSimulator:
             assumes to take same positions in shape (n,2) (where n is the number of things with a position)
         '''
         #python modulo wraps negative numbers in the way one expects
-        wrapped = positions%self.PARAMS()['SIM_WIDTH']
+        wrapped = positions%self.p['SIM_WIDTH']
         return wrapped
 
     def __physics_step(self,t,positions,velocities,prior_lorenz_x):
@@ -207,28 +194,28 @@ class BoidSimulator:
 
         #3. update velocity matrix
         #4. update position matrix
-        new_v = current_v + (fm * self.PARAMS()['DELTA_T'])
-        new_x = current_x + (new_v * self.PARAMS()['DELTA_T'])
+        new_v = current_v + (fm * self.p['DELTA_T'])
+        new_x = current_x + (new_v * self.p['DELTA_T'])
 
         return new_v,new_x
 
     def run_simulation(self):
-        if len(self.PARAMS()) is None:
+        if len(self.p) is None:
             raise Exception('Please generate params and apply them before running simulation. apply_params()')
 
         positions = []
         velocities = []
 
-        self.spawn_bounds = (self.PARAMS()['SPAWN_MIN'],self.PARAMS()['SPAWN_MAX'])
+        self.spawn_bounds = (self.p['SPAWN_MIN'],self.p['SPAWN_MAX'])
 
-        lorenz = self.__generate_lorenz(self.PARAMS()['TIME_STEPS'], self.PARAMS()['L_SAMPLING_RATE'], self.PARAMS()['X_LORENZ'], self.PARAMS()['Y_LORENZ'], self.PARAMS()['Z_LORENZ'])
-        p, v = self.__generate_flock(self.PARAMS()['BOID_COUNT'], self.spawn_bounds, self.PARAMS()['RANDOM_VELOCITY'])
+        lorenz = self.__generate_lorenz(self.p['TIME_STEPS'], self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
+        p, v = self.__generate_flock(self.p['BOID_COUNT'], self.spawn_bounds, self.p['RANDOM_VELOCITY'])
 
-        if self.PARAMS()['COORD_SYSTEM']=='torus':
+        if self.p['COORD_SYSTEM']=='torus':
             p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
 
             #1. Center lorenz around a center where 
-            lorenz = lorenz+self.PARAMS()['SIM_WIDTH']/2
+            lorenz = lorenz+self.p['SIM_WIDTH']/2
             #2. Wrap the recentered lorenz
             lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
         positions.append(p)
@@ -243,11 +230,11 @@ class BoidSimulator:
         except:
             thread_indent=0
 
-        for t in trange(self.PARAMS()['TIME_STEPS'] - 1,desc=f"Thread: {threading.current_thread().name}",position=thread_indent,leave=False):
+        for t in trange(self.p['TIME_STEPS'] - 1,desc=f"Thread: {threading.current_thread().name}",position=thread_indent,leave=False):
             new_v, new_x = self.__physics_step(t,positions, velocities, lorenz[t])
 
             #wrap the new positions
-            if self.PARAMS()['COORD_SYSTEM']=='torus':
+            if self.p['COORD_SYSTEM']=='torus':
                 new_x = self.__lorenz_wrap(new_x)
             
             positions.append(new_x)
@@ -259,10 +246,10 @@ class BoidSimulator:
             "velocities": velocities,
             "predator_positions": lorenz,
             "bounds": self.spawn_bounds,
-            "coord_type":self.PARAMS()['COORD_SYSTEM'],
-            "boid_count": self.PARAMS()['BOID_COUNT'],
-            "time_steps": self.PARAMS()['TIME_STEPS'],
-            "sim_width":self.PARAMS()['SIM_WIDTH'],
-            "config":self.PARAMS()
+            "coord_type":self.p['COORD_SYSTEM'],
+            "boid_count": self.p['BOID_COUNT'],
+            "time_steps": self.p['TIME_STEPS'],
+            "sim_width":self.p['SIM_WIDTH'],
+            "config":self.p
         }
 

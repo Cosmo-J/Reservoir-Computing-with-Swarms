@@ -5,13 +5,10 @@ import tempfile
 TMP_PATH = 'tmp'
 
 class SimSaverLoader:
-    def __init__(self,save_path='boid_runs',config_title = 'NaN'):
-        if save_path[-1]=='/':
-            save_path=save_path[:-1]
+    def __init__(self,save_path):
+        self.save_path = self._validate_save_path(save_path)
 
-        self.save_path = save_path
-        self.config_title = config_title
-
+    
     def _unique_name(self,candidate_name:str):
         '''
         :candidate_name: this is the potential file name /path/to/file
@@ -19,7 +16,8 @@ class SimSaverLoader:
         '''
         extension = '.npz'
         iter = ''
-        candidate_path = f'{self.save_path}/{candidate_name}_run'
+        candidate_path = os.path.join(self.save_path,f'{candidate_name}_run')
+
         while os.path.exists(candidate_path+str(iter)+extension):
             if isinstance(iter,str): 
                 # this is for the first loop only
@@ -29,8 +27,9 @@ class SimSaverLoader:
 
         return candidate_path+str(iter)+extension
 
+    
     def save_run(self, data,config_title:str = None):
-        os.makedirs(self.save_path, exist_ok=True)
+        assert os.path.exists(self.save_path), f"{self.save_path} - Save path no longer exists."
         name = os.path.basename(self.save_path)
         full_save_path_and_name = self._unique_name(name) 
 
@@ -52,12 +51,10 @@ class SimSaverLoader:
         print(f"Saving - {full_save_path_and_name}")
         return full_save_path_and_name
 
-    def set_save_dir(self, path:str):
-        """
-            if the path is directory, name the runs the smallest number iter inside said directory
-        """
+    
+    def _validate_save_path(self, path:str):
         if os.path.isdir(path):
-            self.save_path = path
+            return os.path.abspath(path)
         else:
             raise FileNotFoundError(f"Directory {path} doesn't exist or cant be found.")
 
