@@ -11,3 +11,23 @@ The value in this method is that `.npz` are siblings with **only** their `.ini` 
 ## Rules
 1. Don't put save two `.ini` config files into 1 directory! 
 2. Don't save `.npz` files to directories which don't also contain their `.ini`.
+3. Once you've generated a run from a `.ini` don't edit it so that you can easily see what params it came from.
+
+
+# Example
+Below you can see an example file structure which demonstrates a few things:
+1. Different directories for different configs/types of run.
+2. Generating runs inside the same file as their `.ini`.
+
+
+```
+tests
+├── donut
+│   └── donut.ini
+│   ├── donut_run.npz
+│	└── donut_run0.npz
+└── default
+    └── config.ini
+    ├── default_run.npz
+	└── default_run0.npz
+```
