@@ -1,6 +1,8 @@
 import numpy as np
 from abc import ABC, abstractmethod
 from sklearn.linear_model import Ridge
+from sklearn.linear_model import RidgeCV
+
 from tqdm import trange,tqdm
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 from matplotlib import pyplot as plt
@@ -72,6 +74,7 @@ class ObservationAndPrediction(ABC):
         self.washout_data(washout)
         self.lorenz = replica1.get('predator_positions')
 
+        assert np.allclose(replica1.get('predator_positions'),replica2.get('predator_positions')), "Replicas have different predator positions"
 
         # stuff relating to very large simulations
         rep1_memmap = replica1.get('memory_map',False)
@@ -455,33 +458,7 @@ class ObservationAndPrediction(ABC):
             return (sv1_centered.T @ sv2_centered) / (time_steps-1)
 
 
-    def _get_lorenz_targets(self,futures,start=0,end=None):
-        """
-        Helper function for offseting the lorenz positions for use in `ridge prediction`. Additionally helpful for slicing offsetted positions when test-train splitting occurs.
-
-        Parameters
-        ----------
-        futures : int
-            The number of time steps by which the lorenz x coordinates are offset. E.g. a value of 20 means that that indexing the return of this function at 0 would give the 20th timestep.
-        start : int, optional
-            the start slice (inclusive) of the lorenz before offsetting, by default 0
-        end : int, optional
-            the end slice (exclusive) of the lorenz before offsetting, by default None, which with array slicing counts is 'to the end'.
-
-        Returns
-        -------
-        np.ndarray, shape (N_offset,)
-            where N_offset = (end_idx - start_idx) - futures
-
-        Notes
-        -----
-        `start` and `end` are used mostly just for making the training testing split
-        """
-        lorenz_x = self.lorenz[start:end,0]
-        return lorenz_x[futures:]
-
-
-    def ridge_prediction(self,state_vector1,state_vector2=None,ridge_beta=0.1,traintest_split=0.6,prediction_distance=1):
+    def ridge_prediction(self,state_vector,train_size=0.6,prediction_distance=1,ridge_alpha=None):
         """
         Use ridge regression to make a prediction about the x position of the lorenz attractor using  a reservoir readout.
 
@@ -490,18 +467,14 @@ class ObservationAndPrediction(ABC):
             state_vector1 : np.ndarray
                 A state vector of shape (N,F) N time_steps/samples, F features/modes.
 
-            state_vector2 : np.ndarray, optional 
-                Assumed to be a replica of state_vector1 (same shape). 
-                If given, will be used for testing a ridge trained on state_vector1. Defaults to None.
-
-            ridge_beta : float, optional 
-                ridge regression. Defaults to 0.1.
-
-            traintest_split : float, optional
+            train_size : float, optional
                 Given only one state_vector, the fraction of the data used for training. Defaults to 0.6.
 
             prediction_distance : int, optional
                 Number of simulation steps into the future the ridge regression will attempt to fit. Defaults to 1.
+
+            ridge_alpha : float, optional 
+                Defaults to None in which case an optimal alphas is calculated using `sklearn.linear_model.RidgeCV`. Otherwise, give a value to manually set alpha.
 
         Raises
         ------
@@ -514,50 +487,49 @@ class ObservationAndPrediction(ABC):
             Array of shape (N) where N is (time_steps - prediction_distance).
         corr_coef : float
             The correlation coefficient found against the prediction.
+        alpha : float
+            The alpha found if `ridge_alpha=None` (RidgeCV), otherwise, returns the parameter `ridge_alpha`
         """        
         
-        if state_vector1.shape[0]<=prediction_distance:
-            raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {state_vector1.shape[0]}")
+        if state_vector.shape[0]<=prediction_distance:
+            raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {state_vector.shape[0]}")
 
-        if state_vector2 is None:
-            split_idx = int(len(state_vector1)*traintest_split)
-            state_training = state_vector1[:split_idx]
-            state_testing = state_vector1[split_idx:]
+        y = self.lorenz[prediction_distance:,0]
+        new_total_time = len(y)
+        X = state_vector[:new_total_time]
 
-            x_train = state_training[:-prediction_distance]
-            y_train = self._get_lorenz_targets(prediction_distance,end=split_idx)
+        split_idx = int(new_total_time * train_size)
 
-            x_test = state_testing[:-prediction_distance]
-            y_test = self._get_lorenz_targets(prediction_distance,start=split_idx)
+        X_train, y_train = X[:split_idx], y[:split_idx]
+        X_test, y_test = X[split_idx:], y[split_idx:]
+        
+        mew = np.mean(X_train,axis=0)
+        sigma = np.std(X_train,axis=0)
+
+        X_train_stand = (X_train - mew)/sigma
+        X_test_norm = (X_test - mew)/sigma
+
+        if ridge_alpha == None:
+            alphas = np.logspace(-3, 8, 50)
+            #alphas=np.logspace(-6, 2, 20)
+            ridge = RidgeCV(alphas=alphas, cv=5)
+            ridge.fit(X_train_stand, y_train)
+            best_alpha = ridge.alpha_
         else:
-            state_training = state_vector1
-            state_testing = state_vector2
+            ridge = Ridge(alpha=ridge_alpha)
+            ridge.fit(X_train_stand, y_train)
+            best_alpha = ridge_alpha
 
-            # reduce the training set length by the prediction distance
-            x_train = state_training[:-prediction_distance]
-
-            y_train = self._get_lorenz_targets(prediction_distance)
-
-            x_test = state_testing[:-prediction_distance]
-            y_test = self._get_lorenz_targets(prediction_distance)
-
-
-        ridge = Ridge(alpha=ridge_beta,fit_intercept=True)
-        ridge.fit(x_train,y_train)
-        prediction = ridge.predict(x_test)
-
+        prediction = ridge.predict(X_test_norm)
 
         #equation 13 from Lymburn et al, cosin similarity
         time_steps = y_test.shape[0]
-
         numer = np.sum((prediction * y_test))/time_steps
-        pred_sqr_t_avg = np.sum((prediction**2))/time_steps
-        targ_sqr_t_avg = np.sum((y_test**2))/time_steps
-        denom = np.sqrt( pred_sqr_t_avg * targ_sqr_t_avg )
+        denom = np.sqrt(np.mean(prediction**2) * np.mean(y_test**2))
 
         corr_coef = numer/denom
 
-        return prediction, corr_coef
+        return prediction, corr_coef, best_alpha
 
 
     def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,pop_out=False):
@@ -587,12 +559,13 @@ class ObservationAndPrediction(ABC):
         --------
             `ridge_prediction()` : For getting `prediction` and `corr_coef`
         """        
-        
         lorenz_x_shifted = self.lorenz[prediction_distance:,0]
-        
+        prediction_start = len(lorenz_x_shifted) - len(prediction)
+        lorenz_x = lorenz_x_shifted[prediction_start:]
+
         if x_range is None: 
             print("Plotting total range")
-            x_range=[0,len(lorenz_x_shifted)]
+            x_range=[0,len(lorenz_x)]
         
         configs = self.replica1.get('config').item()
         sim_delta_t = configs['DELTA_T']
@@ -604,7 +577,7 @@ class ObservationAndPrediction(ABC):
         fig, ax = plt.subplots(figsize=(20, 6))
         plt.subplots_adjust(bottom=0.2)
 
-        ax.plot(lorenz_x_shifted, color='red', label='lorenz_x')
+        ax.plot(lorenz_x, color='red', label='lorenz_x')
         ax.plot(prediction, color='blue', linestyle='dashed', label='Prediction')
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
@@ -617,7 +590,7 @@ class ObservationAndPrediction(ABC):
 
         if pop_out:
             window_size = 2000
-            max_index = len(lorenz_x_shifted)
+            max_index = len(lorenz_x)
             ax_slider = plt.axes([0.1, 0.05, 0.8, 0.03])
             slider = Slider(ax_slider, 'Position', 0, max_index - window_size, valinit=0, valstep=10)
 
@@ -640,6 +613,7 @@ class ObservationAndPrediction(ABC):
         else:
             ax.set_xlim(x_range)
             ticks = ax.get_xticks()
+            ax.set_xticks(ticks)#stupid line to stop matplotlib getting upset
             ax.set_xticklabels((ticks*sim_delta_t))
 
         return ax
@@ -1219,9 +1193,12 @@ class COMReadout(ObservationAndPrediction):
             npy.flush()
             return npy
         
-        else:
-            pos_flattened = np.mean(x,axis=1)
-            return pos_flattened
+        
+        pos_flattened = np.mean(x,axis=1)
+
+        #pos_normalised = (pos_flattened - np.mean(pos_flattened,axis=0))/np.std(pos_flattened, axis=0)
+        #return pos_normalised
+        return pos_flattened
     
     def faithful(self, sv1, sv2):
         '''
