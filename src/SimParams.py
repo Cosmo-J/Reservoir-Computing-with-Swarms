@@ -1,60 +1,62 @@
 import configparser
 import os
+GLOBAL_DEFAULTS = {
+        # Simulation params
+        "sim":
+            {
+                "DELTA_T": 0.02,
+                "TIME_STEPS": 100,
+                "BOID_COUNT": 200,
+                "SPAWN_MIN": -1.0,
+                "SPAWN_MAX": 1.0,
+                "RANDOM_VELOCITY": True,
+                "SIM_WIDTH": 10,
+                "PREDATOR":True,
+                'COORD_SYSTEM':'flat'#can be flat or torus
+            },
+
+        # force constants
+        "forces":
+            {
+                "K_SPEED" : 10.0,
+                "K_REPULSION" : 1.0,
+                "K_ALIGNMENT" : 0.1,
+                "K_HOMING" : 2.0,
+                "K_FRICTION" : 20.0,
+                "K_PREDATOR"  : 100.0
+            },
+
+        # sigmoidal function
+        "sigmoid":
+            {
+                "BETA" : 0.1,
+                "ALPHA" : 200.0
+            },
+
+        # neighbour radii
+        "radii":
+            {
+                "RAD_ALIGNMENT" : 1.0,
+                "RAD_REPULSION" : 1.0,
+                "RAD_HOMING" : 1.0,
+                "RAD_PREDATOR" : 1.0
+            },
+
+        # Lorenz conditions
+        "lorenz":
+            {
+                "L_SIGMA" : 10.0,
+                "L_RHO" : 28.0,
+                "L_BETA" : 8/3,
+                "X_LORENZ" : 0.0,
+                "Y_LORENZ" : 1.0,
+                "Z_LORENZ" : 1.05,
+                "L_SAMPLING_RATE" : 0.02 # number of sample per time step, also kind of predator speed
+            }
+    }
+
 class SimParams:
-    DEFAULTS = {
-            # Simulation params
-            "sim":
-                {
-                    "DELTA_T": 0.02,
-                    "TIME_STEPS": 100,
-                    "BOID_COUNT": 200,
-                    "SPAWN_MIN": -1.0,
-                    "SPAWN_MAX": 1.0,
-                    "RANDOM_VELOCITY": True,
-                    "SIM_WIDTH": 10,
-                    "PREDATOR":True,
-                    'COORD_SYSTEM':'flat'#can be flat or torus
-                },
-
-            # force constants
-            "forces":
-                {
-                    "K_SPEED" : 10.0,
-                    "K_REPULSION" : 1.0,
-                    "K_ALIGNMENT" : 0.1,
-                    "K_HOMING" : 2.0,
-                    "K_FRICTION" : 20.0,
-                    "K_PREDATOR"  : 100.0
-                },
-
-            # sigmoidal function
-            "sigmoid":
-                {
-                    "BETA" : 0.1,
-                    "ALPHA" : 200.0
-                },
-
-            # neighbour radii
-            "radii":
-                {
-                    "RAD_ALIGNMENT" : 1.0,
-                    "RAD_REPULSION" : 1.0,
-                    "RAD_HOMING" : 1.0,
-                    "RAD_PREDATOR" : 1.0
-                },
-
-            # Lorenz conditions
-            "lorenz":
-                {
-                    "L_SIGMA" : 10.0,
-                    "L_RHO" : 28.0,
-                    "L_BETA" : 8/3,
-                    "X_LORENZ" : 0.0,
-                    "Y_LORENZ" : 1.0,
-                    "Z_LORENZ" : 1.05,
-                    "L_SAMPLING_RATE" : 0.02 # number of sample per time step, also kind of predator speed
-                }
-        }
+    DEFAULTS = GLOBAL_DEFAULTS
 
     def __init__(self):
         self.params = self.get_flat_params(self.DEFAULTS)
@@ -95,7 +97,8 @@ class SimParams:
                     self.params[k] = v
         return self.params
     
-    def write_default_ini(self,path,name='config.ini'):
+    @staticmethod
+    def write_default_ini(path,name='config.ini'):
         split = name.split('.')
         if len(split) == 2:
             if name.endswith('.ini'):
@@ -110,7 +113,7 @@ class SimParams:
         ini_dir = os.path.join(path, name_val)
 
         cfg = configparser.ConfigParser()
-        for section_title,section in self.DEFAULTS.items():
+        for section_title,section in GLOBAL_DEFAULTS.items():
             cfg[section_title] = {}
             for k,v in section.items():
                 cfg[section_title][k] = str(v)
