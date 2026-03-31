@@ -560,7 +560,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,time_range=None,pop_out=False):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,time_range=None,pop_out=False):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
@@ -572,7 +572,7 @@ class ObservationAndPrediction(ABC):
         corr_coef : float
             float correlation coefficient which is displayed at the top of the plot.
         time_range : tuple[float,float], optional
-            The range of time steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
+            The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
         pop_out : bool, optional
             Pops out the plot with media esque controls for scrolling through and adjusting the displayed range. More for user analysis opposed to a shareable output. Defaults as `False`.
 
@@ -588,25 +588,36 @@ class ObservationAndPrediction(ABC):
             `ridge_prediction()` : For getting `prediction` and `corr_coef`
         """        
         
-        lorenz_x = self.lorenz[:,0]
-        if time_range is None:
-            time_range=[0,len(self.lorenz)]
+        lorenz_x_shifted = self.lorenz[prediction_distance:,0]
+        
+        if time_range is None: 
+            print("Plotting total range")
+            time_range=[0,len(lorenz_x_shifted)]
+        
+        configs = self.replica1.get('config').item()
+        sim_delta_t = configs['DELTA_T']
+        look_ahead = prediction_distance*sim_delta_t
+
+
+        y_label = f"lorenz_x(t+{look_ahead})"
 
         fig, ax = plt.subplots(figsize=(20, 6))
         plt.subplots_adjust(bottom=0.2)
 
-        window_size = 2000
-        max_index = len(lorenz_x)
-
-        ax.plot(lorenz_x, color='red', label='lorenz_x')
+        ax.plot(lorenz_x_shifted, color='red', label='lorenz_x')
         ax.plot(prediction, color='blue', linestyle='dashed', label='Prediction')
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
+
+
         plt.xlabel('time')
-        plt.ylabel('lorenz_x(t+1)')
+        plt.ylabel(y_label)
         plt.title(f'correlation coefficient R: {corr_coef}')
 
+
         if pop_out:
+            window_size = 2000
+            max_index = len(lorenz_x_shifted)
             ax_slider = plt.axes([0.1, 0.05, 0.8, 0.03])
             slider = Slider(ax_slider, 'Position', 0, max_index - window_size, valinit=0, valstep=10)
 
@@ -624,8 +635,12 @@ class ObservationAndPrediction(ABC):
             zoom_slider.on_changed(update)
 
             ax.set_xlim([0, window_size])
+            plt.xlabel('simulation_steps')
+
         else:
             ax.set_xlim(time_range)
+            ticks = ax.get_xticks()
+            ax.set_xticklabels((ticks*sim_delta_t))
 
         return ax
     
