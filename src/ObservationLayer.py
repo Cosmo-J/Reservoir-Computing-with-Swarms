@@ -560,7 +560,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,time_range=None,pop_out=False):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,pop_out=False):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
@@ -571,7 +571,7 @@ class ObservationAndPrediction(ABC):
             Shape (N,) which is the predicted position of the lorenz attractor at each N time step. Intended to be used with `ridge_prediction()`.
         corr_coef : float
             float correlation coefficient which is displayed at the top of the plot.
-        time_range : tuple[float,float], optional
+        x_range : tuple[float,float], optional
             The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
         pop_out : bool, optional
             Pops out the plot with media esque controls for scrolling through and adjusting the displayed range. More for user analysis opposed to a shareable output. Defaults as `False`.
@@ -590,9 +590,9 @@ class ObservationAndPrediction(ABC):
         
         lorenz_x_shifted = self.lorenz[prediction_distance:,0]
         
-        if time_range is None: 
+        if x_range is None: 
             print("Plotting total range")
-            time_range=[0,len(lorenz_x_shifted)]
+            x_range=[0,len(lorenz_x_shifted)]
         
         configs = self.replica1.get('config').item()
         sim_delta_t = configs['DELTA_T']
@@ -638,7 +638,7 @@ class ObservationAndPrediction(ABC):
             plt.xlabel('simulation_steps')
 
         else:
-            ax.set_xlim(time_range)
+            ax.set_xlim(x_range)
             ticks = ax.get_xticks()
             ax.set_xticklabels((ticks*sim_delta_t))
 
