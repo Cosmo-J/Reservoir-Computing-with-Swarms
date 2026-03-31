@@ -97,7 +97,6 @@ class SimParams:
     
     def write_default_ini(self,path,name='config.ini'):
         split = name.split('.')
-        print(split)
         if len(split) == 2:
             if name.endswith('.ini'):
                 name_val = name
