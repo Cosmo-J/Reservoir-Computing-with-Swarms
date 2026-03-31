@@ -6,7 +6,6 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
-from .SimSaverLoader import SimSaverLoader
 from .ConfigManager import ConfigManager
 
 
@@ -85,7 +84,7 @@ class BoidSimulator:
     def __total_force(self, boid_x, boid_v, a_neighbours, r_neighbours, h_neighbours, pred_x=None):
 
         no_lorenz = 1 if self.p['PREDATOR'] else 0 #if lorenz is disabled in the params
-    #           |-coefficent-----------------|-force--------------------|-force-params---------|
+    #           |-coefficent--------------|-force-----------------|-force-params---------|
         force = ((self.p['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
                 (self.p['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
                 (self.p['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
