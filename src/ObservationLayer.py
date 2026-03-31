@@ -146,14 +146,14 @@ class ObservationAndPrediction(ABC):
 
 
     @abstractmethod
-    def get_reservoir_state_vectorised(self,data):
+    def get_reservoir_state_vectorised(self,replica):
         """
         Abstract function definition. Ensures that subclasses have a way of converting their replicas into vectorised readouts.
 
         Parameters
         ----------
-        data : attr.replica#
-            expected to be passed one of its own attibutes, either replica1 or replica2.
+        replica : self.replica#
+            Class instance expects to be passed one of its own attibutes, either replica1 or replica2.
 
         Returns
         ------
@@ -178,6 +178,18 @@ class ObservationAndPrediction(ABC):
             Same as sv1 except for replica2.
         methodology : str
             `function.__name__` reference of a given methodology for calculating the consistency profile.
+
+        Returns
+        -------
+        consistent_capacity : float
+            
+            - theta 
+            - consistent capacity
+            - trace of the cross-covariance of `sv1` and `sv2`
+
+        gamma_sqaured : list[floats]
+
+            - eigenvalues of the cross-covariance of `sv1` and `sv2`
         """        
         pass
 
@@ -487,7 +499,7 @@ class ObservationAndPrediction(ABC):
                 Given only one state_vector, the fraction of the data used for training. Defaults to 0.6.
 
             prediction_distance : int, optional
-                Number of time steps into the future the ridge regression will attempt to fit. Defaults to 1.
+                Number of simulation steps into the future the ridge regression will attempt to fit. Defaults to 1.
 
         Raises
         ------
@@ -519,21 +531,30 @@ class ObservationAndPrediction(ABC):
             state_training = state_vector1
             state_testing = state_vector2
 
+            # reduce the training set length by the prediction distance
             x_train = state_training[:-prediction_distance]
+
             y_train = self._get_lorenz_targets(prediction_distance)
 
             x_test = state_testing[:-prediction_distance]
             y_test = self._get_lorenz_targets(prediction_distance)
 
 
-
-        ridge = Ridge(alpha=ridge_beta,fit_intercept=False)
-
+        ridge = Ridge(alpha=ridge_beta,fit_intercept=True)
         ridge.fit(x_train,y_train)
-
         prediction = ridge.predict(x_test)
 
-        corr_coef = np.corrcoef(y_test,prediction)[0,1]
+
+        #equation 13 from Lymburn et al, cosin similarity
+        time_steps = y_test.shape[0]
+
+        numer = np.sum((prediction * y_test))/time_steps
+        pred_sqr_t_avg = np.sum((prediction**2))/time_steps
+        targ_sqr_t_avg = np.sum((y_test**2))/time_steps
+        denom = np.sqrt( pred_sqr_t_avg * targ_sqr_t_avg )
+
+        corr_coef = numer/denom
+
         return prediction, corr_coef
 
 
@@ -658,6 +679,61 @@ class ObservationAndPrediction(ABC):
 
 
 class KernelReadout(ObservationAndPrediction):
+    """
+        Subclass of `ObservationAndPrediction` used to generate observation kernels and perform kernel readouts.
+        Heavily based on the kernel observation layer methodology described in Lymburn et al (2021).
+
+        Only support analysis between two replicas of a simulation.
+
+        See Also
+        --------
+        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `FlatReadout` : Subclass which is used to perform a naive readout.
+
+
+        Parameters
+        ----------
+        kernel_number : int
+            The number of observation kernels that should be generated for the simulation.
+
+        replica1 : dict
+            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SimSaverLoader`.
+        replica2 : dict
+            Expected to be identical to `replica1` in terms of:
+
+            - time steps (length of simulation).
+            - simulation parameters.
+            - driving signal.
+
+            Although expected that the reservoir had different starting conditions (positions/velocities).
+        washout : int
+            The number of initial time steps to discard to remove transient 
+            dynamics.
+        chunk_size : int, optional
+            The number of rows processed per iteration during memory-mapped 
+            operations. Default is 5000.
+        cleanup_tmps : bool, optional
+            If True, on initialisation, the class instance will search a tmp directory for temporary files used 
+            in previous memory mapped operations which no longer have a live object which references them (orphaned).
+            Note that if you're using python notebooks you may have to manually delete previous class instances `del(INSTANCE_NAME)`
+            as overwriting a instance name doesn't remove them from the stack.
+
+        Attributes
+        ----------
+        memory_map : bool
+            Indicates whether the input data uses np.memmapping (memory mapping). Is checked by many other internal functions
+            to determine whether to create and use temporary `.npy` files and chunking as to offload memory usage.
+        tmp_paths : list[str]
+            When a temporary file is created its path is added to this list. Referenced in `_cleanup_tmps` to create a whitelist 
+            of still referenced temporary files that shouldn't be deleted.
+        lorenz : np.ndarray
+            Shape (N,2) N time_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
+            namesake a lorenz attractor, although in theory could be any driving signal stored as the predator positions in a given
+            replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
+            driving signal, as this attribute is also used in calculations involving replica2.
+    """
+
+
     def __init__(self,kernel_number,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
@@ -665,15 +741,26 @@ class KernelReadout(ObservationAndPrediction):
 
 
     def generate_kernels(self):
-        '''
-            A kernel has a center and a width. 
-            The position c_m is found by getting a random position of a boid at a random time.
-            The width w_m is the distance between said random boid and it's 5th closest neighber
-        '''
+        """
+        Generate a `self.kernel_number` number of kernels described by their center and width.
 
-        positions = self.replica2['positions']
-        time_steps = self.replica2['time_steps']
-        boid_count = self.replica2['boid_count']
+        Achieved using the methods outlined in Lymburn et al (2021). A kernel m has a center c_m and width w_m:
+
+        - The position c_m is found by getting a random position of a boid at a random time.
+        - The width w_m is the distance between said random boid and it's 5th closest neighber
+
+        Returns
+        -------
+        np.ndarray : centers
+            Shape (kernel_number, 2)
+        
+        np.ndarray : widths
+            Shape(kernel_number,)
+        """        
+
+        positions = self.replica1['positions']
+        time_steps = self.replica1['time_steps']
+        boid_count = self.replica1['boid_count']
         
         widths = [None] * self.kernel_number
         centers = [None] * self.kernel_number
@@ -698,9 +785,33 @@ class KernelReadout(ObservationAndPrediction):
         return np.array(centers),np.array(widths)
     
 
-    def get_reservoir_state_vectorised(self, run):
-        positions = run['positions']
-        velocities = run['velocities']
+    def get_reservoir_state_vectorised(self, replica):
+        """
+        This is implements the kernel observation layer described in Lymburn et al (2021).
+
+        Each observation kernel performs 3 kinds of readout, all of which are concatenated to create kernel_number*3 total features.
+
+        Where A is an array of agents inside a kernels width, for a given kernel it's readouts are:
+
+        1. A positions summed
+        2. positions of A multiplied by the _x_ velocities of A, summed
+        3. positions of A multiplied by the _y_ velocities of A, summed
+
+        For specifics and equations, see Section II.C, Lymburn et al (2021).
+
+        Parameters
+        ----------
+        replica : self.replica#
+            Class instance expects to be passed one of its own attibutes, either replica1 or replica2.
+
+        Returns
+        -------
+        np.ndarray or np.memmap
+            matrix of shape (N,F) where N is the number of time steps and F is the number of features, but specifically in this case F = kernel_number*3.
+        """
+
+        positions = replica['positions']
+        velocities = replica['velocities']
         
         time_steps = positions.shape[0]
         kernels = self.kernel_number
@@ -762,11 +873,6 @@ class KernelReadout(ObservationAndPrediction):
 
 
     def v1(self,sv1,sv2):
-        '''
-            this version of the consistency profile attempts to expand on the methods as exactly described in lymburn.
-            This is because the entirely faithful implementation doesn't produce similar consistency profiles
-        '''
-        
         sv1 = sv1 - np.mean(sv1,axis=0)
         sv2 = sv2 - np.mean(sv2,axis=0)
 
@@ -828,13 +934,34 @@ class KernelReadout(ObservationAndPrediction):
 
 
     def faithful(self,sv1,sv2):
-        '''
-            this is the most faithful implementaiton of what was described in the paper
+        """
+        This is a methodology for calculating the consistency profile. Named for the fact that it's the most literal interpretation of
+        the techniques described in section 1 of the appendix in Lymburn et al (2021).
 
-            sv1 and sv2 have the shape (N,F) N samples, F features and are the readouts of the observation kernels
+        Parameters
+        ----------
+        sv1 : np.ndarray, shape(N,F)
+            Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
+            Numpy array with shape N time_steps/samples and F features/modes.
+        sv2 : np.ndarray, shape(N,F)
+            Same as sv1 except for replica2.
 
-            The code below can be simplified using other np feautures but being verbose for readability and proof of implementation
-        '''
+        Returns
+        -------
+        consistent_capacity : float
+            
+            - theta 
+            - consistent capacity
+            - trace of the cross-covariance of `sv1` and `sv2`
+
+        gamma_sqaured : list[floats]
+
+            - eigenvalues of the cross-covariance of `sv1` and `sv2`
+
+        Notes
+        -----
+        This function does not demonstrate the most efficient way of performing these calculations, rather, it's intended to be very verbose to make it more comprehendible.
+        """        
         
         '''
             "responses may be labeled x(t) and x′(t) and are assumed to have zero mean"
@@ -918,7 +1045,7 @@ class KernelReadout(ObservationAndPrediction):
 
         return consistent_capacity,gamma_squared
 
-
+    #TODO get rid of this function and the one in flat readout, instead put the functionality in the super function and check against the object instance when determining whether the methodology is valid. Can even add a message saying like "Methodology not found, maybe you intended to create a KernelReadout object?" etc etc
     def calc_consistency_profile(self,sv1,sv2, methodology:str):
         options = [self.faithful.__name__,self.v1.__name__]
 
@@ -935,8 +1062,10 @@ class FlatReadout(ObservationAndPrediction):
         super().__init__(replica1,replica2,washout,chunk_size)
     
 
-    def get_reservoir_state_vectorised(self, data):
-        x = data['positions']
+    def get_reservoir_state_vectorised(self, replica):
+
+
+        x = replica['positions']
 
         time_steps,num_boids,_ = x.shape
         features = num_boids*2 #x and y positions
