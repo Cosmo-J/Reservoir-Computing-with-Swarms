@@ -73,12 +73,18 @@ class ObservationAndPrediction(ABC):
     def __init__(self,replica1,replica2,washout,chunk_size=5000,cleanup_tmps=True):
         self.replica1 = replica1
         self.replica2 = replica2
+
+        #validating paramaters
+        same_params, table = ConfigManager.compare_params(replica1.get('config').item(),replica2.get('config').item())
+        if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
+        if not np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
+        conf = replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
+        if washout > conf['TIME_STEPS']: raise ValueError("Washout greater or equal to number of time steps.")
+        if washout > conf['TIME_STEPS']/2: print(f"WARNING: Washout accounts for {int(washout/conf['TIME_STEPS'])}% of total time steps.")
+        if chunk_size > conf['TIME_STEPS']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
+
         self.washout_data(washout)
         self.lorenz = replica1.get('predator_positions')
-
-        same_params, table = ConfigManager.compare_params(replica1.get('config').item(),replica2.get('config').item())
-        assert same_params==True, "Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table
-        assert np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')), "Replicas have different predator positions"
 
         # stuff relating to very large simulations
         rep1_memmap = replica1.get('memory_map',False)
@@ -468,7 +474,7 @@ class ObservationAndPrediction(ABC):
 
         Parameters
         ---------
-            state_vector1 : np.ndarray
+            state_vector : np.ndarray
                 A state vector of shape (N,F) N time_steps/samples, F features/modes.
 
             train_size : float, optional
@@ -536,7 +542,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef, best_alpha
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,pop_out=False):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range:tuple=None,pop_out:bool=False):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
@@ -570,6 +576,8 @@ class ObservationAndPrediction(ABC):
         if x_range is None: 
             print("Plotting total range")
             x_range=[0,len(lorenz_x)]
+        elif x_range[0]>len(lorenz_x):
+            raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(lorenz_x)}")
         
         configs = self.replica1.get('config').item()
         sim_delta_t = configs['DELTA_T']
@@ -730,7 +738,7 @@ class KernelReadout(ObservationAndPrediction):
     """
 
 
-    def __init__(self,kernel_number,replica1,replica2,washout,chunk_size):
+    def __init__(self,replica1,replica2,kernel_number,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
