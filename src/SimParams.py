@@ -80,6 +80,12 @@ class SimParams:
             3. ini is up to date
                 if not, add the new rows and give them the default values
         '''
+
+        if not path.endswith('.ini'):
+            raise TypeError('Expected path to .ini file. e.g. PATH/TO/INI.ini')
+
+        assert os.path.exists(path), "Path does not exist."
+
         cfg = configparser.ConfigParser()
         cfg.read(path)
         self.params = {}
