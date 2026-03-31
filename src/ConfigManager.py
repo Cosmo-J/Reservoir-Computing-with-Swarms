@@ -120,3 +120,60 @@ class ConfigManager:
         
         with open(ini_dir,'w',encoding="utf-8") as f:
             cfg.write(f)
+
+
+    @staticmethod
+    def compare_params(param1, param2):
+        """
+        Pass two dictionaries containing simulation parameters to compare whether or not they are the same.
+
+        Parameters
+        ----------
+        param1 : dict
+            Dictionary of parameters to bec compared with `param2`
+        param2 : dict
+            Dictionary of parameters to bec compared with `param1`
+
+
+        Returns
+        -------
+        bool
+            True or False, whether or not the given parameters are the same
+        str
+            Table comparing their differences, can be appended to any string and or printed out for debugging purposes.
+        """
+        same = True
+        strout = "\n"
+        
+        rows = []
+        for k in set(list(param1)+list(param2)):
+            v1 = param1.get(k, "MISSING")
+            v2 = param2.get(k, "MISSING")
+
+            if k not in param2:
+                same = False
+                status = "missing in param2"
+            elif k not in param1:
+                same = False
+                status = "missing in param1"
+
+            if v1 == v2:
+                status = "same"
+            else:
+                same = False
+                status = "different"
+
+            rows.append((k, v1, v2, status))
+
+        if not same:
+            strout+="\n"
+            strout+= f"{'key':<20} {'param1':<20} {'param2':<20} status"
+            strout+="\n"
+            strout+= ("-" * 75)
+
+            for k, v1, v2, status in rows:
+                strout+="\n"
+                strout+= f"{str(k):<20} {str(v1):<20} {str(v2):<20} {status}"
+        
+        return same,strout
+        
