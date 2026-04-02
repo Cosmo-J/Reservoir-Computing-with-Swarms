@@ -6,15 +6,13 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 
-from .ConfigManager import ConfigManager
-
 
 EPS =1e-12 # used for avoiding divide by 0
 
 
 class BoidSimulator:
-    def __init__(self,param_loader:ConfigManager):
-        self.p = param_loader.params
+    def __init__(self,parameters):
+        self.p = parameters
 
 
     def set_seed(self,seed):

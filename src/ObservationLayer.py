@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from sklearn.linear_model import Ridge
 from sklearn.linear_model import RidgeCV
 
-from .ConfigManager import ConfigManager
+from .ConfigManager import compare_params
 
 from tqdm import trange,tqdm
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
@@ -76,7 +76,7 @@ class ObservationAndPrediction(ABC):
         self.washout_data(washout)
         self.lorenz = replica1.get('predator_positions')
 
-        same_params, table = ConfigManager.compare_params(replica1.get('config').item(),replica2.get('config').item())
+        same_params, table = compare_params(replica1.get('config').item(),replica2.get('config').item())
         assert same_params==True, "Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table
         assert np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')), "Replicas have different predator positions"
 
