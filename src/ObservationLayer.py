@@ -542,7 +542,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef, best_alpha
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,pop_out:bool=False):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
@@ -555,10 +555,6 @@ class ObservationAndPrediction(ABC):
             float correlation coefficient which is displayed at the top of the plot.
         x_range : tuple[float,float], optional
             The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
-        pop_out : bool, optional
-            Pops out the plot with media esque controls for scrolling through and adjusting the displayed range. More for user analysis opposed to a shareable output. Defaults as `False`.
-
-            - Requires `%matplotlib widget` in jupyter notebooks.
 
         Returns
         -------
@@ -600,33 +596,10 @@ class ObservationAndPrediction(ABC):
         plt.title(f'correlation coefficient R: {corr_coef}')
 
 
-        if pop_out:
-            window_size = 2000
-            max_index = len(lorenz_x)
-            ax_slider = plt.axes([0.1, 0.05, 0.8, 0.03])
-            slider = Slider(ax_slider, 'Position', 0, max_index - window_size, valinit=0, valstep=10)
-
-            ax_zoom = plt.axes([0.1, 0.01, 0.8, 0.03])
-            zoom_slider = Slider(ax_zoom, 'Window Size', 100, max_index, valinit=window_size, valstep=100)
-
-            def update(val):
-                start = int(slider.val)
-                end = start + int(zoom_slider.val)
-                end = min(end, max_index)
-                ax.set_xlim([start, end])
-                fig.canvas.draw_idle()
-
-            slider.on_changed(update)
-            zoom_slider.on_changed(update)
-
-            ax.set_xlim([0, window_size])
-            plt.xlabel('simulation_steps')
-
-        else:
-            ax.set_xlim(x_range)
-            ticks = ax.get_xticks()
-            ax.set_xticks(ticks)#stupid line to stop matplotlib getting upset
-            ax.set_xticklabels((ticks*sim_delta_t))
+        ax.set_xlim(x_range)
+        ticks = ax.get_xticks()
+        ax.set_xticks(ticks)#stupid line to stop matplotlib getting upset
+        ax.set_xticklabels((ticks*sim_delta_t))
 
         return ax
     
