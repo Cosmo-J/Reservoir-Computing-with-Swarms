@@ -75,7 +75,7 @@ class ObservationAndPrediction(ABC):
         self.replica2 = replica2
 
         #validating paramaters
-        same_params, table = ConfigManager.compare_params(replica1.get('config').item(),replica2.get('config').item())
+        same_params, table = compare_params(replica1.get('config').item(),replica2.get('config').item())
         if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
         if not np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
         conf = replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
@@ -542,7 +542,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef, best_alpha
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range:tuple=None,pop_out:bool=False):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,pop_out:bool=False):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.

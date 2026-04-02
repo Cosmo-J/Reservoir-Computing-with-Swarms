@@ -44,7 +44,7 @@ class BoidSimulator:
         return force
 
     def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
-        if self.p['COORD_SYSTEM']=='torus':
+        if self.p['COORD_SYSTEM']=='torus' and not neis_x is None:
             width = self.p['SIM_WIDTH']
             if len(neis_x)==0:
                 return np.zeros(2)
