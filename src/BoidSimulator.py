@@ -133,11 +133,12 @@ class BoidSimulator:
         return dxBYdt,dyBYdt,dzBYdt
 
     def generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
+        # Lambda for rescaling the output to have std of 2 and mean 0 (as specified in Lymburn et al)
         rescale = lambda axis: 2 * (axis - np.mean(axis)) / np.std(axis)
-        lorenz_segment = time_steps*sample_rate
 
-        soln = solve_ivp(self.__lorenz_equations, t_span=(0,lorenz_segment) ,y0=(x_init,y_init,z_init) ,dense_output=True)
-        t = np.linspace(0, lorenz_segment, time_steps)
+        t = np.arange(time_steps, dtype=float) * sample_rate
+
+        soln = solve_ivp(self.__lorenz_equations, t_span=(t[0],t[-1]) ,y0=(x_init,y_init,z_init) ,dense_output=True)
         coords = soln.sol(t).T
 
         rescaled_x_coords = rescale(coords[:, 0])
@@ -146,6 +147,7 @@ class BoidSimulator:
         lorenz_series = np.column_stack((rescaled_x_coords,rescaled_y_coords))
 
         return lorenz_series
+
 
     def generate_flock(self,flock_size,spawn_bounds,random_velocity=False,random_position=False):
         #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
