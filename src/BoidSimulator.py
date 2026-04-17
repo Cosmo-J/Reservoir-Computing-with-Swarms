@@ -11,17 +11,18 @@ EPS =1e-12 # used for avoiding divide by 0
 
 
 class BoidSimulator:
-    def __init__(self,parameters):
+    def __init__(self,parameters,use_seed):
         self.p = parameters
+        self.using_seed = use_seed
+        self.set_seed(random=use_seed)
 
 
-    def set_seed(self,seed):
-        if isinstance(seed,int): 
-            np.random.seed(seed)
-            print(f"Using custom np.random seed: {seed}")
-        else: 
-            np.random.seed(1)
-        
+    def set_seed(self,random):
+        if random:
+            np.random.seed(None)
+        else:
+            np.random.seed(self.p['RANDOM_SEED'])
+
     ## Forces
     def __repulsion_force(self,boid,neis_x):
         """ 
@@ -111,7 +112,7 @@ class BoidSimulator:
 
         # this is iterating through each boid and applying its force
         for i, (x,v) in enumerate(zip(boid_xs,boid_vs)):
-            # remove self from the ids in the neighbour lists
+            # each agent (i) removes itself from its own list of neighbours (for each force)
             align_lists[i].remove(i)
             repul_lists[i].remove(i)
             homing_lists[i].remove(i)
@@ -120,13 +121,7 @@ class BoidSimulator:
             r_neis_x = boid_xs[repul_lists[i]]
             h_neis_x = boid_xs[homing_lists[i]]
 
-            forces[i] = self.__total_force( boid_x = x,
-                                            boid_v=v,
-                                            a_neighbours=a_neis_v,
-                                            r_neighbours=r_neis_x,
-                                            h_neighbours=h_neis_x,
-                                            pred_x=pred_x)
-
+            forces[i] = self.__total_force(x, v, a_neis_v, r_neis_x, h_neis_x, pred_x)
 
         return forces
 
@@ -137,7 +132,7 @@ class BoidSimulator:
         dzBYdt = (x * y) - (self.p['L_BETA'] * z)
         return dxBYdt,dyBYdt,dzBYdt
 
-    def __generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
+    def generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
         rescale = lambda axis: 2 * (axis - np.mean(axis)) / np.std(axis)
         lorenz_segment = time_steps*sample_rate
 
@@ -152,21 +147,22 @@ class BoidSimulator:
 
         return lorenz_series
 
-    def __generate_flock(self,flock_size,spawn_bounds,random_velocity=False):
+    def generate_flock(self,flock_size,spawn_bounds,random_velocity=False,random_position=False):
         #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
         spawn_min = min(spawn_bounds)
         spawn_max = max(spawn_bounds)
         spawn_width = np.abs(spawn_max-spawn_min)
 
+        self.set_seed(random_position) #undo the random seed (may not do anything if already not random)
         if self.p['COORD_SYSTEM']=='flat':
             x = spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
         elif self.p['COORD_SYSTEM']=='torus':
             x = self.p['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
+        self.set_seed(self.using_seed) #reapply the random seed (if its being used)
 
-        if random_velocity: 
-            v=np.random.rand(flock_size,2)
-        else: 
-            v = np.zeros((flock_size,2),dtype=float)
+        self.set_seed(random_velocity) #undo the random seed (may not do anything if already not random)
+        v=np.random.rand(flock_size,2)
+        self.set_seed(self.using_seed) #reapply the random seed (if its being used)
 
         # returns positions, velocities, neighbour data
         return x, v
@@ -186,13 +182,12 @@ class BoidSimulator:
         current_x = positions[t]
         current_v = velocities[t]
 
-        #2. Calculate the force matrix (forces acting on each boid) at the current step
+        # Calculate the force matrix (forces acting on each boid) at the current step
         fm = self.__force_matrix(current_x,current_v,prior_lorenz_x)
 
-        #3. update velocity matrix
-        #4. update position matrix
+        # Update velocity and position matrix
         new_v = current_v + (fm * self.p['DELTA_T'])
-        new_x = current_x + (new_v * self.p['DELTA_T'])
+        new_x = current_x + (current_v * self.p['DELTA_T'])
 
         return new_v,new_x
 
@@ -205,8 +200,8 @@ class BoidSimulator:
 
         self.spawn_bounds = (self.p['SPAWN_MIN'],self.p['SPAWN_MAX'])
 
-        lorenz = self.__generate_lorenz(self.p['TIME_STEPS'], self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
-        p, v = self.__generate_flock(self.p['BOID_COUNT'], self.spawn_bounds, self.p['RANDOM_VELOCITY'])
+        lorenz = self.generate_lorenz(self.p['TIME_STEPS'], self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
+        p, v = self.generate_flock(self.p['BOID_COUNT'], self.spawn_bounds, self.p['RANDOM_VELOCITY'], self.p['RANDOM_POSITION'])
 
         if self.p['COORD_SYSTEM']=='torus':
             p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
