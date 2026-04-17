@@ -10,10 +10,12 @@ GLOBAL_DEFAULTS = {
                 "BOID_COUNT": 200,
                 "SPAWN_MIN": -1.0,
                 "SPAWN_MAX": 1.0,
-                "RANDOM_VELOCITY": True,
                 "SIM_WIDTH": 10,
                 "PREDATOR":True,
-                'COORD_SYSTEM':'flat'#can be flat or torus
+                "COORD_SYSTEM":'flat',#can be flat or torus
+                "RANDOM_VELOCITY": False,#whether or not to overide the seed when calculating the positions
+                "RANDOM_POSITION": False,#whether or not to overide the seed when calculating the velocities
+                "RANDOM_SEED":1,
             },
 
         # force constants
