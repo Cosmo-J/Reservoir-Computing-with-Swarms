@@ -6,8 +6,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 import matplotlib.pyplot as plt
 
+from .SimSaverLoader import SimSaverLoader
 from .BoidSimulator import BoidSimulator
 from .BoidVisualizer import BoidVisualizer
+from .ConfigManager import load_config, generate_config
 
 
 parser = argparse.ArgumentParser()
@@ -32,15 +34,13 @@ def main(custom_args=None):
     else:
         args = parser.parse_args()
 
-    Simulator = BoidSimulator()
-    ParamManager, SaverLoader = Simulator.initialise()
     # if generating params, early return because this is an iscolated use case
     if args.generate_params:
         target_dir = args.generate_params
         if target_dir == './':
             target_dir = DEFAULT_SAVE_PATH
 
-        ParamManager.write_default_ini(target_dir)
+        generate_config(target_dir)
         return
 
 
@@ -62,7 +62,7 @@ def main(custom_args=None):
 
     #(1)
     if view and not run:
-        datas = SaverLoader.find_npzs(view)
+        datas = SimSaverLoader.find_npzs(view)
         bv = BoidVisualizer(datas)
         ani = bv.get_animation(overlay=True)
         plt.show()
@@ -71,10 +71,12 @@ def main(custom_args=None):
     #(2)
     if run:
         ini_path = run
-        ParamManager.load_params_from_ini(ini_path)
-        if we_be_saving: SaverLoader.set_save_dir(save_path)
+        simulation_parameters = load_config(ini_path)
+        if we_be_saving: 
+            saver = SimSaverLoader(save_path)
 
         # setting the seed
+        Simulator = BoidSimulator(simulation_parameters)
         Simulator.set_seed(seed)
 
         if multithread:
@@ -86,14 +88,14 @@ def main(custom_args=None):
                 result = f.result()
                 datas[i] = result
                 
-                if we_be_saving: SaverLoader.save_run(result,config_title=run)
+                if we_be_saving: saver.save_run(result,config_title=run)
             executor.shutdown()
         else:
             datas=[]
             for i in trange(iterations,desc='Iterations',position=0):
                 result = Simulator.run_simulation()
                 datas.append(result) 
-                if we_be_saving: SaverLoader.save_run(result,config_title=run)
+                if we_be_saving: saver.save_run(result,config_title=run)
 
 
 
