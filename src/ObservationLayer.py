@@ -4,6 +4,7 @@ from sklearn.linear_model import Ridge
 from sklearn.linear_model import RidgeCV
 
 from .ConfigManager import compare_params
+from .SaverLoader import create_mmap
 
 from tqdm import trange,tqdm
 from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
@@ -11,7 +12,6 @@ from matplotlib import pyplot as plt
 from matplotlib.widgets import Slider
 from scipy.spatial import KDTree
 import os
-import tempfile
 import gc
 
 TMP_PATH = 'tmp'
@@ -34,7 +34,7 @@ class ObservationAndPrediction(ABC):
         Parameters
         ----------
         replica1 : dict
-            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SimSaverLoader`.
+            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SaverLoader`.
         replica2 : dict
             Expected to be identical to `replica1` in terms of:
 
@@ -64,31 +64,31 @@ class ObservationAndPrediction(ABC):
             When a temporary file is created its path is added to this list. Referenced in `_cleanup_tmps` to create a whitelist 
             of still referenced temporary files that shouldn't be deleted.
         lorenz : np.ndarray
-            Shape (N,2) N time_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
+            Shape (N,2) N simulation_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
             namesake a lorenz attractor, although in theory could be any driving signal stored as the predator positions in a given
             replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
             driving signal, as this attribute is also used in calculations involving replica2.
     """
 
     def __init__(self,replica1,replica2,washout,chunk_size=5000,cleanup_tmps=True):
-        self.replica1 = replica1
-        self.replica2 = replica2
+        self.replica1 = replica1.copy()
+        self.replica2 = replica2.copy()
 
         #validating paramaters
-        same_params, table = compare_params(replica1.get('config').item(),replica2.get('config').item())
+        same_params, table = compare_params(self.replica1.get('config').item(),self.replica2.get('config').item())
         if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
-        if not np.allclose(replica1.get('predator_positions'), replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
-        conf = replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
-        if washout > conf['TIME_STEPS']: raise ValueError("Washout greater or equal to number of time steps.")
-        if washout > conf['TIME_STEPS']/2: print(f"WARNING: Washout accounts for {int(washout/conf['TIME_STEPS'])}% of total time steps.")
-        if chunk_size > conf['TIME_STEPS']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
+        if not np.allclose(self.replica1.get('predator_positions'), self.replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
+        conf = self.replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
+        if washout > conf['SIMULATION_STEPS']: raise ValueError("Washout greater or equal to number of time steps.")
+        if washout > conf['SIMULATION_STEPS']/2: print(f"WARNING: Washout accounts for {int(washout/conf['SIMULATION_STEPS'])}% of total time steps.")
+        if chunk_size > conf['SIMULATION_STEPS']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
 
         self.washout_data(washout)
-        self.lorenz = replica1.get('predator_positions')
+        self.lorenz = self.replica1.get('predator_positions')
 
         # stuff relating to very large simulations
-        rep1_memmap = replica1.get('memory_map',False)
-        rep2_memmap = replica2.get('memory_map',False)
+        rep1_memmap = self.replica1.get('memory_map',False)
+        rep2_memmap = self.replica2.get('memory_map',False)
 
         self.memory_map = bool(rep1_memmap or rep2_memmap)
         self.chunk_size=chunk_size
@@ -153,15 +153,16 @@ class ObservationAndPrediction(ABC):
             data['positions'] = data['positions'][washout:]
             data['velocities'] = data['velocities'][washout:]
             data['predator_positions']= data['predator_positions'][washout:]
-            data['time_steps']= data.get('time_steps') - washout
+            data['simulation_steps']= data.get('simulation_steps') - washout
             return data
         
+
         self.replica1 = wash(self.replica1)
         self.replica2 = wash(self.replica2)
 
-
-    @abstractmethod
-    def get_reservoir_state_vectorised(self,replica):
+    
+    def get_reservoir_state_vectorised(self,replica=None):
+        #TODO update this docstring
         """
         Abstract function definition. Ensures that subclasses have a way of converting their replicas into vectorised readouts.
 
@@ -172,9 +173,17 @@ class ObservationAndPrediction(ABC):
 
         Returns
         ------
-        Intended to return some `np.ndarray` of shape (N,F) N time_steps/samples F features, for compatability with other methods in the class.
+        Intended to return some `np.ndarray` of shape (N,F) N simulation_steps/samples F features, for compatability with other methods in the class.
         """        
-        pass
+        if not replica is None:
+            if not (replica is self.replica1 or replica is self.replica2):
+                raise ValueError("'replica' parameter invalid. Please pass one of this instances replica attributes, self.replica1 or self.replica2.")
+            else:
+                vectorise_me = [replica]
+        else:
+            vectorise_me = [self.replica1,self.replica2]
+
+        return vectorise_me
 
 
     @abstractmethod
@@ -188,7 +197,7 @@ class ObservationAndPrediction(ABC):
         ----------
         sv1 : np.ndarray, shape(N,F)
             Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
-            Numpy array with shape N time_steps/samples and F features/modes.
+            Numpy array with shape N simulation_steps/samples and F features/modes.
         sv2 : np.ndarray, shape(N,F)
             Same as sv1 except for replica2.
         methodology : str
@@ -209,43 +218,6 @@ class ObservationAndPrediction(ABC):
         pass
 
 
-    @staticmethod
-    def _create_mmap(prefix, shape, dtype='float64'):
-        """
-        Internal helper function for generating tempory `.npy` files which are used with memory mapping and chunking.
-
-        - Makes a temporary dir `./tmp`
-        - Creates temporary file in this directory
-
-        Parameters
-        ----------
-        prefix : str
-            Natural language prefix for the temporary file name in the pattern `PREFIX + UUID + .npy`.
-            As to say, the user doesn't need to worry about ensuring unique names, this is done automatically.
-        shape : list[ints]
-            shape of the created matrix inside the np.memmap.
-        dtype : str, optional
-            datatype of the np.memmap, by default 'float64'.
-
-        Returns
-        -------
-        np.memmap
-            np.memmap object.
-        str
-            path to temporary file created.
-
-        Notes
-        -----
-        `tempfile.NamedTemporaryFile(delete=False,...)` delete is false because the temporary files may be used for operations done in a jupyter notebook.
-        """        
-    
-        os.makedirs(TMP_PATH, exist_ok=True)
-        tmp_file = tempfile.NamedTemporaryFile(delete=False, prefix=prefix, suffix='.npy', dir=TMP_PATH)
-        path = tmp_file.name
-        tmp_file.close()
-        print(f"\nMade tmp file at {path}")
-        return np.memmap(path, dtype=dtype, mode='w+', shape=shape), path
-
 
     def _mean(self,sv):
         """
@@ -255,7 +227,7 @@ class ObservationAndPrediction(ABC):
         ----------
         sv : np.ndarray, shape(N,F)
 
-            N time_steps/samples, F features/modes.
+            N simulation_steps/samples, F features/modes.
 
             Vectorised readout of a given replica across time.
         
@@ -276,11 +248,11 @@ class ObservationAndPrediction(ABC):
         against overloading one's RAM given a very long time series replica.
         """        
         if self.memory_map:
-            time_steps,features = sv.shape
+            simulation_steps,features = sv.shape
             total_sum = np.zeros(features, dtype='float64')
 
-            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
-                chunk_end = min(chunk_start+self.chunk_size, time_steps)
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
                 
                 sv_chunk = sv[chunk_start:chunk_end]
 
@@ -288,7 +260,7 @@ class ObservationAndPrediction(ABC):
 
                 total_sum += chunk_sum
 
-            return total_sum / time_steps
+            return total_sum / simulation_steps
         else:
             return np.mean(sv,axis=0)
 
@@ -301,7 +273,7 @@ class ObservationAndPrediction(ABC):
         ----------
         sv : np.ndarray, shape(N,F)
 
-            N time_steps/samples, F features/modes.
+            N simulation_steps/samples, F features/modes.
 
             Vectorised readout of a given replica across time.
 
@@ -322,22 +294,22 @@ class ObservationAndPrediction(ABC):
         against overloading one's RAM given a very long time series replica.
         """        
         if self.memory_map:
-            time_steps,features = sv.shape
+            simulation_steps,features = sv.shape
             total_sum = np.zeros(features,dtype='float64')
 
-            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
-                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
                 sv_chunk = sv[chunk_start:chunk_end]
                 chunk_sum = np.sum(sv_chunk,axis=0)
                 total_sum += chunk_sum
 
-            sv_mean = total_sum / time_steps
+            sv_mean = total_sum / simulation_steps
 
-            sv_centered_npy, npy_path = self._create_mmap('sv_centered_',(time_steps,features))
+            sv_centered_npy, npy_path = create_mmap('sv_centered_',(simulation_steps,features))
             self.tmp_paths.append(npy_path)
 
-            for chunk_start in trange(0,time_steps,self.chunk_size,desc='Chunked Mean'):
-                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
+                chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
                 sv_chunk = sv[chunk_start:chunk_end]
                 chunk_centered = sv_chunk-sv_mean
                 sv_centered_npy[chunk_start:chunk_end] = chunk_centered
@@ -355,7 +327,7 @@ class ObservationAndPrediction(ABC):
         Parameters
         ----------
         sv : np.ndarray, shape(N,F)
-            State vector of N time_steps/samples and F features/modes.
+            State vector of N simulation_steps/samples and F features/modes.
         
         transform : np.ndarray, shape(F,F)
             The transformation matrix applied to `sv`.
@@ -379,12 +351,12 @@ class ObservationAndPrediction(ABC):
         """
 
         if self.memory_map:
-            time_steps, features = sv.shape
-            mat_mul_out, npy_path = self._create_mmap('mat_mul_', (time_steps, features))
+            simulation_steps, features = sv.shape
+            mat_mul_out, npy_path = create_mmap('mat_mul_', (simulation_steps, features))
             self.tmp_paths.append(npy_path)
 
-            for chunk_start in trange(0,time_steps,self.chunk_size,desc="Chunked matrix multiplication"):
-                chunk_end = min(chunk_start+self.chunk_size,time_steps)
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked matrix multiplication"):
+                chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
 
                 mat_mul_out[chunk_start:chunk_end] = sv[chunk_start:chunk_end] @ transform
         
@@ -446,64 +418,65 @@ class ObservationAndPrediction(ABC):
 
 
         if self.memory_map:
-            time_steps,feats1 = sv1.shape
+            simulation_steps,feats1 = sv1.shape
             _, feats2 = sv2.shape
 
             covariances = np.zeros((feats1, feats2), dtype='float64')
 
-            for chunk_start in trange(0,time_steps,self.chunk_size,desc="Chunked Covariance"):
-                chunk_end = min(chunk_start+self.chunk_size, time_steps)
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance"):
+                chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
 
                 sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
                 sv2_chunk_centered = sv2[chunk_start:chunk_end] - sv2_mean
 
                 covariances += (sv1_chunk_centered.T @ sv2_chunk_centered)
 
-            return covariances / (time_steps-1)
+            return covariances / (simulation_steps-1)
         else:
             sv1_centered = sv1-sv1_mean
             sv2_centered = sv2-sv2_mean
             
-            time_steps = sv1_centered.shape[0]
-            return (sv1_centered.T @ sv2_centered) / (time_steps-1)
+            simulation_steps = sv1_centered.shape[0]
+            return (sv1_centered.T @ sv2_centered) / (simulation_steps-1)
 
 
     def ridge_prediction(self,state_vector,train_size=0.6,prediction_distance=1,ridge_alpha=None):
         """
-        Use ridge regression to make a prediction about the x position of the lorenz attractor using  a reservoir readout.
+            Use ridge regression to make a prediction about the x position of the lorenz attractor using  a reservoir readout.
 
-        Parameters
-        ---------
-            state_vector : np.ndarray
-                A state vector of shape (N,F) N time_steps/samples, F features/modes.
+            Parameters
+            ---------
+                state_vector : np.ndarray
+                    A state vector of shape (N,F) N simulation_steps/samples, F features/modes.
 
-            train_size : float, optional
-                Given only one state_vector, the fraction of the data used for training. Defaults to 0.6.
+                train_size : float, optional
+                    Given only one state_vector, the fraction of the data used for training. Defaults to 0.6.
 
-            prediction_distance : int, optional
-                Number of simulation steps into the future the ridge regression will attempt to fit. Defaults to 1.
+                prediction_distance : int, optional
+                    Number of simulation steps into the future the ridge regression will attempt to fit. Defaults to 1.
 
-            ridge_alpha : float, optional 
-                Defaults to None in which case an optimal alphas is calculated using `sklearn.linear_model.RidgeCV`. Otherwise, give a value to manually set alpha.
+                ridge_alpha : float, optional 
+                    Defaults to None in which case an optimal alphas is calculated using `sklearn.linear_model.RidgeCV`. Otherwise, give a value to manually set alpha.
 
-        Raises
-        ------
-        ValueError
-            if the number of time steps of the state vectors are less than or equal to the prediction distance
+            Raises
+            ------
+            ValueError
+                if the number of time steps of the state vectors are less than or equal to the prediction distance
 
-        Returns
-        -------
-        prediction : np.ndarray
-            Array of shape (N) where N is (time_steps - prediction_distance).
-        corr_coef : float
-            The correlation coefficient found against the prediction.
-        alpha : float
+            Returns
+            -------
+            prediction : np.ndarray
+                Array of shape (N) where N is (simulation_steps - prediction_distance).
+            corr_coef : float
+                The correlation coefficient found against the prediction.
+            alpha : float
             The alpha found if `ridge_alpha=None` (RidgeCV), otherwise, returns the parameter `ridge_alpha`
         """        
         
         if state_vector.shape[0]<=prediction_distance:
             raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {state_vector.shape[0]}")
 
+        # y is an array of lorenz x coordinates starting from the prediction distance
         y = self.lorenz[prediction_distance:,0]
         new_total_time = len(y)
         X = state_vector[:new_total_time]
@@ -533,8 +506,8 @@ class ObservationAndPrediction(ABC):
         prediction = ridge.predict(X_test_norm)
 
         #equation 13 from Lymburn et al, cosin similarity
-        time_steps = y_test.shape[0]
-        numer = np.sum((prediction * y_test))/time_steps
+        simulation_steps = y_test.shape[0]
+        numer = np.sum((prediction * y_test))/simulation_steps
         denom = np.sqrt(np.mean(prediction**2) * np.mean(y_test**2))
 
         corr_coef = numer/denom
@@ -542,7 +515,7 @@ class ObservationAndPrediction(ABC):
         return prediction, corr_coef, best_alpha
 
 
-    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None):
+    def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False):
         """
         Intended to be used on the outputs of `ridge_prediction()`.
         Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
@@ -555,6 +528,8 @@ class ObservationAndPrediction(ABC):
             float correlation coefficient which is displayed at the top of the plot.
         x_range : tuple[float,float], optional
             The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
+        simulation_steps : bool
+            Whether to display t as equaling simulation steps, or time time steps. Default false, therefore t=time steps.
 
         Returns
         -------
@@ -574,12 +549,15 @@ class ObservationAndPrediction(ABC):
             x_range=[0,len(lorenz_x)]
         elif x_range[0]>len(lorenz_x):
             raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(lorenz_x)}")
-        
+    
         configs = self.replica1.get('config').item()
         sim_delta_t = configs['DELTA_T']
-        look_ahead = prediction_distance*sim_delta_t
 
-
+        if simulation_steps:
+            look_ahead = prediction_distance
+        else:
+            look_ahead = prediction_distance*sim_delta_t
+        
         y_label = f"lorenz_x(t+{look_ahead})"
 
         fig, ax = plt.subplots(figsize=(20, 6))
@@ -590,8 +568,11 @@ class ObservationAndPrediction(ABC):
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
 
+        if simulation_steps:
+            plt.xlabel('t, simulation steps')
+        else:
+            plt.xlabel(f'time steps \n(1 time step = {sim_delta_t} simulation steps)')
 
-        plt.xlabel('time')
         plt.ylabel(y_label)
         plt.title(f'correlation coefficient R: {corr_coef}')
 
@@ -599,7 +580,11 @@ class ObservationAndPrediction(ABC):
         ax.set_xlim(x_range)
         ticks = ax.get_xticks()
         ax.set_xticks(ticks)#stupid line to stop matplotlib getting upset
-        ax.set_xticklabels((ticks*sim_delta_t))
+
+        if simulation_steps:
+            ax.set_xticklabels(ticks)
+        else:
+            ax.set_xticklabels((ticks*sim_delta_t))
 
         return ax
     
@@ -674,7 +659,7 @@ class KernelReadout(ObservationAndPrediction):
             The number of observation kernels that should be generated for the simulation.
 
         replica1 : dict
-            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SimSaverLoader`.
+            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SaverLoader`.
         replica2 : dict
             Expected to be identical to `replica1` in terms of:
 
@@ -704,7 +689,7 @@ class KernelReadout(ObservationAndPrediction):
             When a temporary file is created its path is added to this list. Referenced in `_cleanup_tmps` to create a whitelist 
             of still referenced temporary files that shouldn't be deleted.
         lorenz : np.ndarray
-            Shape (N,2) N time_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
+            Shape (N,2) N simulation_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
             namesake a lorenz attractor, although in theory could be any driving signal stored as the predator positions in a given
             replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
             driving signal, as this attribute is also used in calculations involving replica2.
@@ -736,14 +721,14 @@ class KernelReadout(ObservationAndPrediction):
         """        
 
         positions = self.replica1['positions']
-        time_steps = self.replica1['time_steps']
+        simulation_steps = self.replica1['simulation_steps']
         boid_count = self.replica1['boid_count']
         
         widths = [None] * self.kernel_number
         centers = [None] * self.kernel_number
 
         for m in range(self.kernel_number):
-            random_time = np.random.randint(0, time_steps) #selects a random t in the range of time steps of the simulation
+            random_time = np.random.randint(0, simulation_steps) #selects a random t in the range of time steps of the simulation
             xs_at_random_time = positions[random_time] # selects the positions at the random time step
 
             random_agent_index = np.random.randint(0, boid_count)
@@ -752,8 +737,8 @@ class KernelReadout(ObservationAndPrediction):
             
             # "The width of the kernel is set to the distance to the 5th neighbor of the agent used to determine the location of the kernel at that time"
             tree = KDTree(xs_at_random_time) 
-            distances, indices = tree.query(c_m, k=5)# find the closest 5 agents to random_agent, 6 
-            w_m = distances[4]
+            distances, indices = tree.query(c_m, k=6)# find the closest 5 agents to random_agent/ KDtree includes self as 0th element (with distance 0)
+            w_m = distances[5]
             
             centers[m] = c_m
             widths[m]  = w_m
@@ -762,92 +747,96 @@ class KernelReadout(ObservationAndPrediction):
         return np.array(centers),np.array(widths)
     
 
-    def get_reservoir_state_vectorised(self, replica):
+    def get_reservoir_state_vectorised(self, replica=None):
         """
-        This is implements the kernel observation layer described in Lymburn et al (2021).
+            This is implements the kernel observation layer described in Lymburn et al (2021).
 
-        Each observation kernel performs 3 kinds of readout, all of which are concatenated to create kernel_number*3 total features.
+            Each observation kernel performs 3 kinds of readout, all of which are concatenated to create kernel_number*3 total features.
 
-        Where A is an array of agents inside a kernels width, for a given kernel it's readouts are:
+            Where A is an array of agents inside a kernels width, for a given kernel it's readouts are:
 
-        1. A positions summed
-        2. positions of A multiplied by the _x_ velocities of A, summed
-        3. positions of A multiplied by the _y_ velocities of A, summed
+            1. A positions summed
+            2. positions of A multiplied by the _x_ velocities of A, summed
+            3. positions of A multiplied by the _y_ velocities of A, summed
 
-        For specifics and equations, see Section II.C, Lymburn et al (2021).
+            For specifics and equations, see Section II.C, Lymburn et al (2021).
 
-        Parameters
-        ----------
-        replica : self.replica#
-            Class instance expects to be passed one of its own attibutes, either replica1 or replica2.
+            Parameters
+            ----------
+            replica : self.replica#
+                Class instance expects to be passed one of its own attibutes, either replica1 or replica2.
 
-        Returns
-        -------
-        np.ndarray or np.memmap
+            Returns
+            -------
+            np.ndarray or np.memmap
             matrix of shape (N,F) where N is the number of time steps and F is the number of features, but specifically in this case F = kernel_number*3.
         """
-
-        positions = replica['positions']
-        velocities = replica['velocities']
+        vectorise_me = super().get_reservoir_state_vectorised(replica)
         
-        time_steps = positions.shape[0]
-        kernels = self.kernel_number
-        features = kernels*3 #x3 because 3 readouts occur as specified in the paper
+        readouts = []
+        for replica in vectorise_me:
+            positions = replica['positions']
+            velocities = replica['velocities']
+            
+            simulation_steps = positions.shape[0]
+            kernels = self.kernel_number
+            features = kernels*3 #x3 because 3 readouts occur as specified in the paper
 
-        centers = self.centers
-        widths = self.widths
-        c_sq = np.sum(centers**2, axis=1)
-        
-        if self.memory_map:
-            npy, npy_path = self._create_mmap('kernel_readout_',(time_steps,features))
-            self.tmp_paths.append(npy_path)
-        
-        chunk_starts = list(range(0, time_steps, self.chunk_size))
+            centers = self.centers
+            widths = self.widths
+            c_sq = np.sum(centers**2, axis=1)
+            
+            if self.memory_map:
+                npy, npy_path = create_mmap('kernel_readout_',(simulation_steps,features))
+                self.tmp_paths.append(npy_path)
+            
+            chunk_starts = list(range(0, simulation_steps, self.chunk_size))
 
-        r1_t = []
-        r2_t = []
-        r3_t = []
-        for start in tqdm(chunk_starts, desc="Serial Chunks"):
-            chunk_end = min(start + self.chunk_size, time_steps)
+            r1_t = []
+            r2_t = []
+            r3_t = []
+            for start in tqdm(chunk_starts, desc="Serial Chunks"):
+                chunk_end = min(start + self.chunk_size, simulation_steps)
 
-            #of this chunk
-            pos_c = positions[start:chunk_end]
-            velx_c = velocities[start:chunk_end,:,0,None]
-            vely_c = velocities[start:chunk_end,:,1,None]
+                #of this chunk
+                pos_c = positions[start:chunk_end]
+                velx_c = velocities[start:chunk_end,:,0,None]
+                vely_c = velocities[start:chunk_end,:,1,None]
 
-            pos_sq = np.sum(pos_c**2, axis=2, keepdims=True)
+                pos_sq = np.sum(pos_c**2, axis=2, keepdims=True)
 
-            cross = np.dot(pos_c, centers.T)
+                cross = np.dot(pos_c, centers.T)
 
-            #(x-c_m)^2 expand the brackets vvvvv :D
-            e_numer = pos_sq + c_sq[None, None, :] - 2.0 * cross
-            e_denom = 2 * widths[None, None, :]
+                #(x-c_m)^2 expand the brackets vvvvv :D
+                e_numer = pos_sq + c_sq[None, None, :] - 2.0 * cross
+                e_denom = 2 * widths[None, None, :]
 
-            psi = np.exp(-e_numer / e_denom)
+                psi = np.exp(-e_numer / e_denom)
 
-            r1 = np.sum(psi, axis=1)
-            r2 = np.sum(psi * velx_c, axis=1)
-            r3 = np.sum(psi * vely_c, axis=1)
+                r1 = np.sum(psi, axis=1)
+                r2 = np.sum(psi * velx_c, axis=1)
+                r3 = np.sum(psi * vely_c, axis=1)
+
+                if self.memory_map:
+                    #since features are a vector, below indexs the vector ranges 0-199 is r1 readout, 200-399 is r2, 400-600 is r3
+                    npy[start:chunk_end,0:kernels] = r1
+                    npy[start:chunk_end,kernels:kernels*2] = r2
+                    npy[start:chunk_end,kernels*2:kernels*3] = r3
+                else:
+                    r1_t.append(r1)
+                    r2_t.append(r2)
+                    r3_t.append(r3)
 
             if self.memory_map:
-                #since features are a vector, below indexs the vector ranges 0-199 is r1 readout, 200-399 is r2, 400-600 is r3
-                npy[start:chunk_end,0:kernels] = r1
-                npy[start:chunk_end,kernels:kernels*2] = r2
-                npy[start:chunk_end,kernels*2:kernels*3] = r3
+                npy.flush()
+                readouts.append(npy)
             else:
-                r1_t.append(r1)
-                r2_t.append(r2)
-                r3_t.append(r3)
+                r1_t = np.vstack(r1_t)
+                r2_t = np.vstack(r2_t)
+                r3_t = np.vstack(r3_t)
+                readouts.append(np.concatenate([r1_t, r2_t, r3_t], axis=1))
 
-        if self.memory_map:
-            npy.flush()
-            return npy
-        else:
-            r1_t = np.vstack(r1)
-            r2_t = np.vstack(r2)
-            r3_t = np.vstack(r3)
-            return np.concatenate([r1_t, r2_t, r3_t], axis=1)
-
+        return readouts
 
     def v1(self,sv1,sv2):
         sv1 = sv1 - np.mean(sv1,axis=0)
@@ -919,7 +908,7 @@ class KernelReadout(ObservationAndPrediction):
         ----------
         sv1 : np.ndarray, shape(N,F)
             Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
-            Numpy array with shape N time_steps/samples and F features/modes.
+            Numpy array with shape N simulation_steps/samples and F features/modes.
         sv2 : np.ndarray, shape(N,F)
             Same as sv1 except for replica2.
 
@@ -989,7 +978,6 @@ class KernelReadout(ObservationAndPrediction):
                             normalisation function for x'(t). This is because the 
                             responses aren't using infinite samples and therefore
                             wont have identical auto-covariance matricies.
-
         '''
         # swapped the term position to properly match the shapes
         X1o = self._sv_transform(x1,To)
@@ -1054,36 +1042,39 @@ class NaiveReadout(ObservationAndPrediction):
         super().__init__(replica1,replica2,washout,chunk_size)
     
 
-    def get_reservoir_state_vectorised(self, replica):
+    def get_reservoir_state_vectorised(self,replica=None):
+        vectorise_me = super().get_reservoir_state_vectorised(replica)
 
+        readouts=[]
+        for replica in vectorise_me:
+            x = replica['positions']
 
-        x = replica['positions']
+            simulation_steps,num_boids,_ = x.shape
+            features = num_boids*2 #x and y positions
 
-        time_steps,num_boids,_ = x.shape
-        features = num_boids*2 #x and y positions
+            if self.memory_map:
+                npy, npy_path = create_mmap('flat_readout_',(simulation_steps,features))
+                self.tmp_paths.append(npy_path)
 
-        if self.memory_map:
-            npy, npy_path = self._create_mmap('flat_readout_',(time_steps,features))
-            self.tmp_paths.append(npy_path)
+                chunk_starts = range(0, simulation_steps, self.chunk_size)
+                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                    chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
+                    chunk_data = x[chunk_start:chunk_end]
+                    npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
 
-            chunk_starts = range(0, time_steps, self.chunk_size)
-            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
-                chunk_end = min(chunk_start + self.chunk_size, time_steps)
-                chunk_data = x[chunk_start:chunk_end]
-                npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
-
-            npy.flush()
-            return npy
-
-        pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
-        return pos_flattened
+                npy.flush()
+                readouts.append(npy)
+            else:
+                pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
+                readouts.append(pos_flattened)
+        return readouts
     
 
     def faithful(self, sv1, sv2):
         '''
             implements the equations outlined in the appendix A1-A4
         '''
-        time_steps,modes = sv1.shape
+        simulation_steps,modes = sv1.shape
 
         #force them to have zero mean
         x1 = sv1 - np.mean(sv1,axis=0)
@@ -1092,7 +1083,7 @@ class NaiveReadout(ObservationAndPrediction):
         assert np.allclose(np.mean(x1),np.mean(x2))
 
         #x1 autocovariance
-        cxx = (x1.T@x1)/ time_steps
+        cxx = (x1.T@x1)/ simulation_steps
 
         # "To ensure numerical stability, we add a small regularization term"
         cxx_reg = cxx + (1e-9 * np.eye(modes))
@@ -1108,7 +1099,7 @@ class NaiveReadout(ObservationAndPrediction):
         x2o = x2 @ To
 
         #calculate cross covariance matrix
-        cxx = (x1o.T @ x2o)/time_steps
+        cxx = (x1o.T @ x2o)/simulation_steps
         print(cxx.shape)
 
         #retrieve eigenvalues (where gamma squared is stated to be the same thing)
@@ -1157,39 +1148,45 @@ class COMReadout(ObservationAndPrediction):
     def __init__(self,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
     
-    def get_reservoir_state_vectorised(self, replica):
-        x = replica['positions']
+    def get_reservoir_state_vectorised(self, replica=None):
+        vectorise_me = super().get_reservoir_state_vectorised(replica)
 
-        time_steps,num_boids,_ = x.shape
-        features = num_boids*2 #x and y positions
+        readouts=[]
+        for replica in vectorise_me:
+            x = replica['positions']
 
-        if self.memory_map:
-            npy, npy_path = self._create_mmap('flat_readout_',(time_steps,features))
-            self.tmp_paths.append(npy_path)
+            simulation_steps,_,_ = x.shape
+            features = 2 #x,y center of mass
 
-            chunk_starts = range(0, time_steps, self.chunk_size)
-            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
-                chunk_end = min(chunk_start + self.chunk_size, time_steps)
+            if self.memory_map:
+                npy, npy_path = create_mmap('com_readout_',(simulation_steps,features))
+                self.tmp_paths.append(npy_path)
+
+                chunk_starts = range(0, simulation_steps, self.chunk_size)
+                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                    chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
 
 
-                chunk_data = x[chunk_start:chunk_end]
-                npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
+                    chunk_data = x[chunk_start:chunk_end]
+                    npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
 
-            npy.flush()
-            return npy
+                npy.flush()
+                readouts.append(npy)
+            
+            pos_flattened = np.mean(x,axis=1)
+
+            #pos_normalised = (pos_flattened - np.mean(pos_flattened,axis=0))/np.std(pos_flattened, axis=0)
+            #return pos_normalised
+            readouts.append(pos_flattened)
+
+        return readouts
         
-        
-        pos_flattened = np.mean(x,axis=1)
-
-        #pos_normalised = (pos_flattened - np.mean(pos_flattened,axis=0))/np.std(pos_flattened, axis=0)
-        #return pos_normalised
-        return pos_flattened
     
     def faithful(self, sv1, sv2):
         '''
             implements the equations outlined in the appendix A1-A4
         '''
-        time_steps,modes = sv1.shape
+        simulation_steps,modes = sv1.shape
 
         #force them to have zero mean
         x1 = sv1 - np.mean(sv1,axis=0)
@@ -1198,7 +1195,7 @@ class COMReadout(ObservationAndPrediction):
         assert np.allclose(np.mean(x1),np.mean(x2))
 
         #x1 autocovariance
-        cxx = (x1.T@x1)/ time_steps
+        cxx = (x1.T@x1)/ simulation_steps
 
         # "To ensure numerical stability, we add a small regularization term"
         cxx_reg = cxx + (1e-9 * np.eye(modes))
@@ -1214,7 +1211,7 @@ class COMReadout(ObservationAndPrediction):
         x2o = x2 @ To
 
         #calculate cross covariance matrix
-        cxx = (x1o.T @ x2o)/time_steps
+        cxx = (x1o.T @ x2o)/simulation_steps
         print(cxx.shape)
 
         #retrieve eigenvalues (where gamma squared is stated to be the same thing)
@@ -1228,7 +1225,7 @@ class COMReadout(ObservationAndPrediction):
         options = [self.faithful.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
 
         if methodology not in options:
-            raise Exception(f"Available methods for KernelReadout are {options}")
+            raise Exception(f"Available methods for COMReadout are {options}")
         else:
             methodology = self.__getattribute__(methodology)
 
