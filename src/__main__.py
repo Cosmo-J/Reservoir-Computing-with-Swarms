@@ -1,12 +1,9 @@
-#this is a copy which attempts to use an external params manager
 from tqdm import trange
-from tqdm import tqdm
 import argparse
 import os
-from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 import matplotlib.pyplot as plt
 
-from .SimSaverLoader import SimSaverLoader
+from .SaverLoader import Saver, find_npzs
 from .BoidSimulator import BoidSimulator
 from .BoidVisualizer import BoidVisualizer
 from .ConfigManager import load_config, generate_config
@@ -15,11 +12,11 @@ from .ConfigManager import load_config, generate_config
 parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,                 help="Run a simulation given a .ini file path of parameters.")
 parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                  help="Number of times you want the simulation to be run.")
-parser.add_argument('--seed',                   type=bool,   nargs='?',default=True, const=True,  help="Whether or not the simulator uses a random seed. False uses the seed from the config file.")
+parser.add_argument('--seed',                   type=int,  nargs='?', default=True, const=True,    help="Whether or not the simulator uses a random seed. False uses the seed from the config file.")
 parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="Give a file path to generate an empty .ini with default parameters there.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,                 help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,                help="If iterations is more than 1, use to specify the directory in which a run is saved. Otherwise it can be used to choose a specific save name")
-parser.add_argument('--multithread',    '-mt',   type=bool, nargs='?', default=False,  const=True, help="When running multiple iterations, set true to enable multithreading")
+parser.add_argument('--chunk',          '-c',   type=int,   nargs='?', default=0,  const=10000,    help="int value for chunk size used; enables use of numpy memory mapping.")
 
 DEFAULT_SAVE_PATH = 'tests/'
 def main(custom_args=None):
@@ -49,20 +46,27 @@ def main(custom_args=None):
     iterations = args.iterations # Called replicas because they have different start conditions
     seed = args.seed
     save_path = args.save # save a run (given run or runview)
-    multithread = args.multithread
+    chunking = args.chunk
     
     we_be_saving = save_path is not None
+    
 
+
+    if chunking<0:#case where user inputs something less than 0
+        return ValueError(f"Chunk size must be a positive int greater than 0.")
+    else:
+        we_be_memmap = chunking > 0#memory mapping is enabled if the user entered something more than zero
+        
 
     # Checks
-    print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nmultithreading: {multithread}")
+    print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nchunking: {chunking}")
     if not we_be_saving and run: 
         input('\n--------- WARNING ---------\nNo save path specified so the run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
 
 
     #(1)
     if view and not run:
-        datas = SimSaverLoader.find_npzs(view)
+        datas = find_npzs(view)
         bv = BoidVisualizer(datas)
         ani = bv.get_animation(overlay=True)
         plt.show()
@@ -73,29 +77,16 @@ def main(custom_args=None):
         ini_path = run
         simulation_parameters = load_config(ini_path)
         if we_be_saving: 
-            saver = SimSaverLoader(save_path)
+            saver = Saver(save_path)
 
         # setting the seed
-        Simulator = BoidSimulator(simulation_parameters,seed)
+        Simulator = BoidSimulator(simulation_parameters,seed,memory_mapping=we_be_memmap,chunk_size=chunking)
 
-        if multithread:
-            datas = [None] * iterations
-            executor = TPE(max_workers=4)
-            futures = {executor.submit(Simulator.run_simulation):i for i in range(iterations)}
-            for f in tqdm(as_completed(futures),total=len(futures),desc='Iterations',position=0):
-                i = futures[f]
-                result = f.result()
-                datas[i] = result
-                
-                if we_be_saving: saver.save_run(result,config_title=run)
-            executor.shutdown()
-        else:
-            datas=[]
-            for i in trange(iterations,desc='Iterations',position=0):
-                result = Simulator.run_simulation()
-                datas.append(result) 
-                if we_be_saving: saver.save_run(result,config_title=run)
-
+        datas=[]
+        for i in trange(iterations,desc='Iterations',position=0):
+            result = Simulator.run_simulation()
+            datas.append(result) 
+            if we_be_saving: saver.save_run(result)
 
 
         if view: 

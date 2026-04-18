@@ -2,19 +2,24 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from tqdm import trange
 from scipy.spatial import KDTree
-import threading
-
-from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
-
+from .SaverLoader import create_mmap
 
 EPS =1e-12 # used for avoiding divide by 0
 
-
 class BoidSimulator:
-    def __init__(self,parameters,use_seed):
+    def __init__(self,parameters,use_seed,memory_mapping=False,chunk_size=1000):
+        if len(parameters) <=0:
+            raise ValueError(".ini provided is empty.")
+
         self.p = parameters
-        self.using_seed = use_seed
+
+        # Randomness related params
         self.set_seed(random=use_seed)
+        self.using_seed = use_seed
+
+        # Chunking related params
+        self.chunk_size = chunk_size
+        self.memory_mapping = memory_mapping
 
 
     def set_seed(self,random):
@@ -132,11 +137,11 @@ class BoidSimulator:
         dzBYdt = (x * y) - (self.p['L_BETA'] * z)
         return dxBYdt,dyBYdt,dzBYdt
 
-    def generate_lorenz(self,time_steps, sample_rate, x_init, y_init, z_init):
+    def generate_lorenz(self,simulation_steps, sample_rate, x_init, y_init, z_init,norm_std=2):
         # Lambda for rescaling the output to have std of 2 and mean 0 (as specified in Lymburn et al)
-        rescale = lambda axis: 2 * (axis - np.mean(axis)) / np.std(axis)
+        rescale = lambda axis: norm_std * (axis - np.mean(axis)) / np.std(axis)
 
-        t = np.arange(time_steps, dtype=float) * sample_rate
+        t = np.arange(simulation_steps, dtype=float) * sample_rate
 
         soln = solve_ivp(self.__lorenz_equations, t_span=(t[0],t[-1]) ,y0=(x_init,y_init,z_init) ,dense_output=True)
         coords = soln.sol(t).T
@@ -177,33 +182,40 @@ class BoidSimulator:
         wrapped = positions%self.p['SIM_WIDTH']
         return wrapped
 
-    def __physics_step(self,t,positions,velocities,prior_lorenz_x):
+    def __physics_step(self,current_pos,current_vel,prior_lorenz_x):
         '''
         the priors are the given parameter at t
         '''
-        current_x = positions[t]
-        current_v = velocities[t]
+        current_x = current_pos.copy()
+        current_v = current_vel.copy()
 
         # Calculate the force matrix (forces acting on each boid) at the current step
         fm = self.__force_matrix(current_x,current_v,prior_lorenz_x)
 
         # Update velocity and position matrix
         new_v = current_v + (fm * self.p['DELTA_T'])
-        new_x = current_x + (current_v * self.p['DELTA_T'])
+        #new_x = current_x + (current_v * self.p['DELTA_T']) This is what Lymburn does but my superviser and I agree it's probably supposed to be done like the line below
+        new_x = current_x + (new_v * self.p['DELTA_T'])
 
         return new_v,new_x
 
     def run_simulation(self):
-        if len(self.p) is None:
-            raise Exception('Please generate params and apply them before running simulation. apply_params()')
+        boid_count = self.p['BOID_COUNT']
+        simulation_steps = self.p['SIMULATION_STEPS']
+        mode_shape = (simulation_steps,boid_count,2)
 
-        positions = []
-        velocities = []
+        if self.memory_mapping:
+            # times 2, for two positions, and two velocities
+            positions,_ = create_mmap('boid_positions_',mode_shape)
+            velocities,_ = create_mmap('boid_velocities_',mode_shape)
+        else:
+            positions = np.zeros(mode_shape)
+            velocities= np.zeros(mode_shape)
 
         self.spawn_bounds = (self.p['SPAWN_MIN'],self.p['SPAWN_MAX'])
 
-        lorenz = self.generate_lorenz(self.p['TIME_STEPS'], self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
-        p, v = self.generate_flock(self.p['BOID_COUNT'], self.spawn_bounds, self.p['RANDOM_VELOCITY'], self.p['RANDOM_POSITION'])
+        lorenz = self.generate_lorenz(simulation_steps, self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
+        p, v = self.generate_flock(boid_count, self.spawn_bounds, self.p['RANDOM_VELOCITY'], self.p['RANDOM_POSITION'])
 
         if self.p['COORD_SYSTEM']=='torus':
             p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
@@ -212,38 +224,34 @@ class BoidSimulator:
             lorenz = lorenz+self.p['SIM_WIDTH']/2
             #2. Wrap the recentered lorenz
             lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
-        positions.append(p)
-        velocities.append(v)
+        
+        positions[0] = p
+        velocities[0] = v
 
+        #-1 because the frist step is them spawning. indexed 0 shown above, setting the inital P and V
+        for t in trange(simulation_steps - 1, desc="Simulation",position=1,leave=True):
+            current_pos = positions[t]
+            current_vel = velocities[t]
 
-        """below is a very excentric way of getting the number from the end of the thread name seen <Thread(ThreadPoolExecutor-0_0, started 6119583744)> (which is what current_thread() returns in a MT scenario)
-        otherwise rely on the failure to make the letter d an int to state that its a single threading scenario and thread indent should be 0 LOL
-        not too worried about the bad practise here considering the code is purely for aesthetics"""
-        try:
-            thread_indent = int(threading.current_thread().name[-1])+1
-        except:
-            thread_indent=0
+            new_v, new_x = self.__physics_step(current_pos, current_vel, lorenz[t])
 
-        for t in trange(self.p['TIME_STEPS'] - 1,desc=f"Thread: {threading.current_thread().name}",position=thread_indent,leave=False):
-            new_v, new_x = self.__physics_step(t,positions, velocities, lorenz[t])
-
-            #wrap the new positions
-            if self.p['COORD_SYSTEM']=='torus':
+            if self.p['COORD_SYSTEM'] == 'torus':
                 new_x = self.__lorenz_wrap(new_x)
-            
-            positions.append(new_x)
-            velocities.append(new_v)
 
+            positions[t + 1] = new_x
+            velocities[t + 1] = new_v
+
+            if self.memory_mapping and (t + 1) % self.chunk_size == 0:
+                positions.flush()
+                velocities.flush()
 
         return {
             "positions": positions,
             "velocities": velocities,
             "predator_positions": lorenz,
+            "simulation_steps" :simulation_steps,
+            "boid_count" : boid_count,
             "bounds": self.spawn_bounds,
-            "coord_type":self.p['COORD_SYSTEM'],
-            "boid_count": self.p['BOID_COUNT'],
-            "time_steps": self.p['TIME_STEPS'],
-            "sim_width":self.p['SIM_WIDTH'],
             "config":self.p
         }
 
