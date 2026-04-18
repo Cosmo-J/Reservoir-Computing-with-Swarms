@@ -4,7 +4,6 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, Slider
 from mpl_toolkits.mplot3d import Axes3D
 
-# --- Global Visual Constants ---
 DARK_MODE = False
 ZOOM = 0.1
 BOID_SIZE = 50*ZOOM
@@ -14,13 +13,11 @@ ARROW_WIDTH = 0.05 * ZOOM
 
 
 class BoidVisualizer:
-
     def __init__(self, datasets, predator_trail=10, boid_trail=0):
         self.datasets = datasets
         self.num_sims = len(datasets)
-        self.time_steps = len(datasets[0]['positions'])
+        self.simulation_steps = len(datasets[0]['positions'])
         
-        # Trail Parameters
         self.predator_trail_len = predator_trail
         self.boid_trail_len = boid_trail
         
@@ -45,17 +42,15 @@ class BoidVisualizer:
         self.overlay = False
 
     def _setup_layout(self):
-        """Internal helper to build/rebuild the UI and Axes."""
         self.fig.clf()
         self.artists = []
-        self.axs = []  # Initialize/Reset the axes list
+        self.axs = []
         
         num_cols = 1 if self.overlay else self.num_sims
         cmap = plt.get_cmap("tab10")
 
         for i in range(self.num_sims):
             if self.overlay and i > 0:
-                # Use the first axis created for all subsequent datasets
                 ax = self.axs[0]
             else:
                 proj = '3d' if self.torus_view else None
@@ -67,7 +62,7 @@ class BoidVisualizer:
                 else:
                     ax.set_aspect("equal", adjustable="box")
                 
-                self.axs.append(ax) # Add to list so overlay can find it
+                self.axs.append(ax)
             
             color = cmap(i % cmap.N)
             self.artists.append(self._create_artist(ax, self.datasets[i], color, self.torus_view))
@@ -83,17 +78,20 @@ class BoidVisualizer:
         p0 = data['positions'][0]
         pr0 = data['predator_positions'][0]
         
-        # --- Initialize Trail Artists ---
         # Predator trail (Red)
-        pred_line, = ax.plot([], [], color='red', alpha=0.5, linewidth=1.5, zorder=5) if not torus_view else \
-                     ax.plot([], [], [], color='red', alpha=0.5, linewidth=1.5)
-        
-        # Boid trails (optional, list of lines)
+        if not torus_view:
+            pred_line, = ax.plot([], [], color='red', alpha=0.5, linewidth=1.5, zorder=5)
+        else:
+            pred_line, = ax.plot([], [], [], color='red', alpha=0.5, linewidth=1.5)
+
+        # Boid trails
         boid_lines = []
         if self.boid_trail_len > 0:
             for _ in range(len(p0)):
-                ln, = ax.plot([], [], color=color, alpha=0.2, linewidth=0.5) if not torus_view else \
-                      ax.plot([], [], [], color=color, alpha=0.2, linewidth=0.5)
+                if not torus_view:
+                    ln, = ax.plot([], [], color=color, alpha=0.2, linewidth=0.5)
+                else:
+                    ln, = ax.plot([], [], [], color=color, alpha=0.2, linewidth=0.5)
                 boid_lines.append(ln)
 
         if torus_view:
@@ -111,8 +109,7 @@ class BoidVisualizer:
             boids = ax.scatter([], [], [], s=BOID_SIZE, color=color, alpha=0.8)
             pred = ax.scatter([], [], [], s=PRED_SIZE, color='red', marker='X', visible=show_pred)
             
-            return {"type": "3d", "boids": boids, "pred": pred, "pred_line": pred_line, 
-                    "boid_lines": boid_lines, "L": sim_width}
+            return {"type": "3d", "boids": boids, "pred": pred, "pred_line": pred_line, "boid_lines": boid_lines, "L": sim_width}
         else:
             spawn_bounds = np.array(data.get('spawn_bounds', [-1.0, 1.0])).flatten()
             left, right = (0.0, float(sim_width)) if self.is_torus_sim else (float(spawn_bounds[0])/ZOOM, float(spawn_bounds[1])/ZOOM)
@@ -121,18 +118,16 @@ class BoidVisualizer:
             v0 = data['velocities'][0]
             boids = ax.scatter(p0[:, 0], p0[:, 1], s=BOID_SIZE, color=color)
             pred = ax.scatter(pr0[0], pr0[1], s=PRED_SIZE, color='red', visible=show_pred)
-            quiver = ax.quiver(p0[:, 0], p0[:, 1], v0[:, 0], v0[:, 1], 
-                               color=color, alpha=0.4, scale=ARROW_SCALE, width=ARROW_WIDTH)
+            quiver = ax.quiver(p0[:, 0], p0[:, 1], v0[:, 0], v0[:, 1], color=color, alpha=0.4, scale=ARROW_SCALE, width=ARROW_WIDTH)
             
-            return {"type": "2d", "boids": boids, "pred": pred, "quiver": quiver, 
-                    "pred_line": pred_line, "boid_lines": boid_lines}
+            return {"type": "2d", "boids": boids, "pred": pred, "quiver": quiver, "pred_line": pred_line, "boid_lines": boid_lines}
         
     def _init_ui(self):
         self.fig.subplots_adjust(bottom=0.25)
         
         # Slider
         ax_time = self.fig.add_axes([0.25, 0.12, 0.55, 0.03])
-        self.slider_time = Slider(ax_time, "Time ", 0, self.time_steps - 1, valinit=self.frame, valstep=1)
+        self.slider_time = Slider(ax_time, "Time ", 0, self.simulation_steps - 1, valinit=self.frame, valstep=1)
         self.slider_time.on_changed(lambda val: self.draw_frame(int(val)) if not self.playing else None)
         
         # Play Button
@@ -156,11 +151,9 @@ class BoidVisualizer:
         for i, art in enumerate(self.artists):
             data = self.datasets[i]
             
-            # Current positions
             p = data['positions'][self.frame]
             pr = data['predator_positions'][self.frame]
             
-            # --- Update Trails ---
             start_p = max(0, self.frame - self.predator_trail_len)
             pr_history = data['predator_positions'][start_p : self.frame + 1]
             
@@ -241,17 +234,11 @@ class BoidVisualizer:
                 color = cmap(i % cmap.N)
                 data = self.datasets[i]
                 
-                # --- Trail Logic ---
                 if trails > 0:
-                    # Determine range of history, clipping at 0
                     start_trail = max(0, frame_idx - trails)
-                    # Shape: (trail_steps, num_boids, 2)
                     history = data['positions'][start_trail : frame_idx + 1]
                     
                     if len(history) > 1:
-                        # Draw a line for every boid
-                        # Note: For performance in large sims, this can be slow.
-                        # We iterate boids to create individual fading paths.
                         for b_idx in range(history.shape[1]):
                             boid_history = history[:, b_idx, :]
                             
@@ -259,8 +246,7 @@ class BoidVisualizer:
                                 tx, ty, tz = self._to_torus_3d(boid_history, data.get('sim_width', self.config.get('SIM_WIDTH')))
                                 ax.plot(tx, ty, tz, color=color, alpha=0.3, linewidth=0.8)
                             else:
-                                ax.plot(boid_history[:, 0], boid_history[:, 1], 
-                                        color=color, alpha=0.3, linewidth=0.8)
+                                ax.plot(boid_history[:, 0], boid_history[:, 1], color=color, alpha=0.3, linewidth=0.8)
 
                 # Use existing logic for the main boid bodies
                 artist = self._create_artist(ax, data, color, self.torus_view)
@@ -288,7 +274,7 @@ class BoidVisualizer:
 
     def _tick(self, _):
         if self.playing:
-            self.frame = (self.frame + 1) % self.time_steps
+            self.frame = (self.frame + 1) % self.simulation_steps
             self.slider_time.eventson = False
             self.slider_time.set_val(self.frame)
             self.slider_time.eventson = True
