@@ -5,56 +5,56 @@ GLOBAL_DEFAULTS = {
         # Simulation params
         "sim":
             {
-                "DELTA_T": 0.02,
-                "TIME_STEPS": 100,
-                "BOID_COUNT": 200,
-                "SPAWN_MIN": -1.0,
-                "SPAWN_MAX": 1.0,
-                "SIM_WIDTH": 10,
-                "PREDATOR":True,
-                "COORD_SYSTEM":'flat',#can be flat or torus
-                "RANDOM_VELOCITY": False,#whether or not to overide the seed when calculating the positions
-                "RANDOM_POSITION": False,#whether or not to overide the seed when calculating the velocities
-                "RANDOM_SEED":1,
+                "delta_t": 0.02,
+                "simulation_steps": 500,
+                "boid_count": 200,
+                "spawn_min": -1.0,
+                "spawn_max": 1.0,
+                "sim_width": 10,
+                "predator":True,
+                "coord_system":'flat',#can be flat or torus
+                "random_velocity": False,#whether or not to overide the seed when calculating the positions
+                "random_position": False,#whether or not to overide the seed when calculating the velocities
+                "random_seed":1,
             },
 
         # force constants
         "forces":
             {
-                "K_SPEED" : 10.0,
-                "K_REPULSION" : 1.0,
-                "K_ALIGNMENT" : 0.1,
-                "K_HOMING" : 2.0,
-                "K_FRICTION" : 20.0,
-                "K_PREDATOR"  : 100.0
+                "k_speed" : 10.0,
+                "k_repulsion" : 1.0,
+                "k_alignment" : 0.1,
+                "k_homing" : 2.0,
+                "k_friction" : 5.0,
+                "k_predator"  : 100.0
             },
 
         # sigmoidal function
         "sigmoid":
             {
-                "BETA" : 0.1,
-                "ALPHA" : 200.0
+                "beta" : 0.1,
+                "alpha" : 200.0
             },
 
         # neighbour radii
         "radii":
             {
-                "RAD_ALIGNMENT" : 1.0,
-                "RAD_REPULSION" : 1.0,
-                "RAD_HOMING" : 1.0,
-                "RAD_PREDATOR" : 1.0
+                "rad_alignment" : 1.0,
+                "rad_repulsion" : 1.0,
+                "rad_homing" : 1.0, #only relevent if torus coord space
+                "rad_predator" : 2.0
             },
 
         # Lorenz conditions
         "lorenz":
             {
-                "L_SIGMA" : 10.0,
-                "L_RHO" : 28.0,
-                "L_BETA" : 8/3,
-                "X_LORENZ" : 0.0,
-                "Y_LORENZ" : 1.0,
-                "Z_LORENZ" : 1.05,
-                "L_SAMPLING_RATE" : 0.02 # number of sample per time step, also kind of predator speed
+                "l_sigma" : 10.0,
+                "l_rho" : 28.0,
+                "l_beta" : 8/3,
+                "x_lorenz" : 0.0,
+                "y_lorenz" : 1.0,
+                "z_lorenz" : 1.05,
+                "l_sampling_rate" : 0.02 # number of sample per time step, also kind of predator speed
             }
     }
 
@@ -92,14 +92,14 @@ def load_config(path):
     for section_title,section in GLOBAL_DEFAULTS.items():
         for k,v in section.items():
             cast = type(v)
-            lower_key = k.lower()
+            lower_key = k
             if cfg.has_option(section_title,lower_key):
                 if cast == bool:
                     params[k] = cfg.getboolean(section_title,lower_key)
                 else:
                     params[k] = cast(cfg.get(section_title,lower_key))
             else:
-                raise NameError(f'Config {path} is missing a key:value for {section_title} {k} \n\t Please update the .ini to use this config file!')
+                raise NameError(f'\nConfig {path} is missing a definition for [{section_title}] {k} \n\t Please update the .ini to use this config file!')
     
     return params
 
@@ -145,16 +145,16 @@ def generate_config(path,name='config.ini'):
         cfg.write(f)
 
 
-def compare_params(param1, param2):
+def compare_params(params:list, to_check=None):
     """
     Pass two dictionaries containing simulation parameters to compare whether or not they are the same.
 
     Parameters
     ----------
-    param1 : dict
-        Dictionary of parameters to bec compared with `param2`
-    param2 : dict
-        Dictionary of parameters to bec compared with `param1`
+    params : list(dict)
+        List config dictionaries
+    to_check : str|list (Optional)
+        single string or list of strings of parameters to compare against. Defaults to none, which checks against every parameter
 
     Returns
     -------
@@ -165,37 +165,32 @@ def compare_params(param1, param2):
     str
         Table comparing their differences, can be appended to any string and or printed out for debugging purposes.
     """
+    if isinstance(to_check, str): 
+        to_check = [to_check]
+    elif to_check is None:
+        to_check = set()
+        for p in params:
+            to_check.update(list(p.keys()))
+        #technical the answer is here, comparing set length against each p.keys length, but an early exit would stop the string print logic
+
     same = True
     strout = "\n"
-    
     rows = []
-    for k in set(list(param1)+list(param2)):
-        v1 = param1.get(k, "MISSING")
-        v2 = param2.get(k, "MISSING")
 
-        if k not in param2:
-            same = False
-            status = "missing in param2"
-        elif k not in param1:
-            same = False
-            status = "missing in param1"
-
-        if v1 == v2:
-            status = "same"
-        else:
-            same = False
-            status = "different"
-
-        rows.append((k, v1, v2, status))
+    for k in to_check:
+        vals = [p.get(k, "MISSING") for p in params]
+        is_consistent = all(v == vals[0] for v in vals) and "MISSING" not in vals
+        status = "same" if is_consistent else "different"
+        if not is_consistent: same = False
+        rows.append((k, vals, status))
 
     if not same:
-        strout+="\n"
-        strout+= f"{'key':<20} {'param1':<20} {'param2':<20} status"
-        strout+="\n"
-        strout+= ("-" * 75)
+        col_width = 18
+        headers = "".join([f"param_{i:<{col_width-6}}" for i in range(len(params))])
+        strout += f"\n{'key':<20} {headers} status\n"
+        strout += "-" * (20 + (col_width * len(params)) + 10)
+        for k, vals, status in rows:
+            val_line = "".join([f"{str(v):<{col_width}}" for v in vals])
+            strout += f"\n{str(k):<20} {val_line}{status}"
 
-        for k, v1, v2, status in rows:
-            strout+="\n"
-            strout+= f"{str(k):<20} {str(v1):<20} {str(v2):<20} {status}"
-    
     return same,strout

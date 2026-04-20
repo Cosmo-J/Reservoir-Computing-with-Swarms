@@ -10,8 +10,10 @@ class BoidSimulator:
     def __init__(self,parameters,use_seed,memory_mapping=False,chunk_size=1000):
         if len(parameters) <=0:
             raise ValueError(".ini provided is empty.")
-
         self.p = parameters
+
+        # Exception to the rule that the parameters shouldn't be attributes, just because keeping the following as an attribute improves readbility so much
+        self.torus = parameters['coord_system'] == 'torus'
 
         # Randomness related params
         self.set_seed(random=use_seed)
@@ -26,9 +28,31 @@ class BoidSimulator:
         if random:
             np.random.seed(None)
         else:
-            np.random.seed(self.p['RANDOM_SEED'])
+            np.random.seed(self.p['random_seed'])
 
     ## Forces
+    def __torus_distance(self,x1,x2):
+        """
+            Distance between two points on a torus.
+
+            Parameters
+            ----------
+            x1 : vector(2)
+                first point
+            x2 : vector(2)
+                second point
+
+            Returns
+            -------
+            float
+                distance between the two points
+        """
+        distance = x1 - x2
+        if self.p['coord_system'] == 'torus':
+            width = self.p['sim_width']
+            distance = (distance + width/2) % width - width/2
+        return distance
+    
     def __repulsion_force(self,boid,neis_x):
         """ 
             boid is an np.array(2) [x,y] of a given boid
@@ -36,7 +60,7 @@ class BoidSimulator:
         """
         if len(neis_x)==0: return np.zeros(2)
 
-        dist = boid - neis_x
+        dist = boid - neis_x if self.p['coord_system'] == 'flat' else self.__torus_distance(boid,neis_x)
 
         denom = (dist[:,0]**2 + dist[:,1]**2) + EPS
 
@@ -44,76 +68,77 @@ class BoidSimulator:
 
     def __alignment_force(self,boid_v,neis_v):
         """boid is an np.array(2) [x,y] of a given boid's velocity\n neighoburs is an np.array(2,n) where n is the number of neighbours, and gives the velocities of all the neighbours"""
-        force = np.array([0.0,0.0])
-        for n in neis_v:
-            force+= n - boid_v
+        force = np.sum(neis_v - boid_v, axis=0)
         return force
 
     def __homing_force(self,boid,home=np.array([0.0,0.0]),neis_x=None):
-        if self.p['COORD_SYSTEM']=='torus' and not neis_x is None:
-            width = self.p['SIM_WIDTH']
+        if self.torus and not neis_x is None:
+            width = self.p['sim_width']
             if len(neis_x)==0:
                 return np.zeros(2)
             
-            angles = (neis_x / self.p['SIM_WIDTH']) * 2 * np.pi
+            angles = (neis_x / width) * 2 * np.pi
             mean_cos = np.mean(np.cos(angles),axis=0)
             mean_sin = np.mean(np.sin(angles),axis=0)
 
             mean_angle = np.arctan2(mean_sin,mean_cos)
             
-            target = ((mean_angle / (2 * np.pi)) % 1.0) * self.p['SIM_WIDTH']
-            diff = target - boid
-            diff = (diff + width/2) % width - width/2
+            target = ((mean_angle / (2 * np.pi)) % 1.0) * width
+            diff = self.__torus_distance(target,boid)
             return diff
 
         return home-boid
 
     def __friction_force(self,boid_v):
-        speed = np.hypot(boid_v[0],boid_v[1])
-        return -boid_v * ((speed - self.p['K_SPEED']) / self.p['K_SPEED'])
+        norm_vel = np.linalg.norm(boid_v)
+        s = self.p['k_speed']
+        numer = norm_vel -s
+        denom = s
+        return -boid_v * (numer/denom)
 
     def __predator_force(self,boid_x,pred_x):
         if pred_x is None: return np.array([0.0,0.0])
-        d= np.linalg.norm(boid_x - pred_x)
+        
+        dist = self.__torus_distance(boid_x, pred_x) if self.torus else boid_x - pred_x 
+        dist_norm = np.linalg.norm(dist)
 
         
         # this 'if else' is the heaviside function
-        if(d<=self.p['RAD_PREDATOR']):
-            denom = d**2
-            numer = boid_x-pred_x
+        if(dist_norm<=self.p['rad_predator']):
+            denom = dist_norm**2
+            numer = dist
             return (numer/denom+EPS)
         else:
             return np.array([0.0,0.0])
 
     def __total_force(self, boid_x, boid_v, a_neighbours, r_neighbours, h_neighbours, pred_x=None):
-
-        no_lorenz = 1 if self.p['PREDATOR'] else 0 #if lorenz is disabled in the params
-    #           |-coefficent--------------|-force-----------------|-force-params---------|
-        force = ((self.p['K_ALIGNMENT']*  self.__alignment_force (boid_v,a_neighbours)) +
-                (self.p['K_REPULSION'] *  self.__repulsion_force (boid_x,r_neighbours)) +
-                (self.p['K_HOMING']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
-                (self.p['K_FRICTION']  *  self.__friction_force  (boid_v))              +
-                (self.p['K_PREDATOR']  *  self.__predator_force  (boid_x,pred_x)*no_lorenz ))       
+        no_lorenz = 1 if self.p['predator'] else 0 #if lorenz is disabled in the params
+        #       |-coefficent--------------|-force-----------------|-force-params---------|
+        force = ((self.p['k_alignment']*  self.__alignment_force (boid_v,a_neighbours)) +
+                (self.p['k_repulsion'] *  self.__repulsion_force (boid_x,r_neighbours)) +
+                (self.p['k_homing']    *  self.__homing_force    (boid_x,neis_x=h_neighbours)) +
+                (self.p['k_friction']  *  self.__friction_force  (boid_v))              +
+                (self.p['k_predator']  *  self.__predator_force  (boid_x,pred_x)*no_lorenz ))       
 
         # sigmoidal function
-        force_sigmoid = self.p['ALPHA'] * np.tanh(self.p['BETA'] * force)
+        force_sigmoid = self.p['alpha'] * np.tanh(self.p['beta'] * force)
 
         return force_sigmoid
 
     def __force_matrix(self,boid_xs,boid_vs,pred_x=None):
         forces = np.empty((len(boid_xs),2))
 
-        if self.p['COORD_SYSTEM'] == 'flat':
+        if self.p['coord_system'] == 'flat':
             tree_points = boid_xs
             tree = KDTree(tree_points)
 
-        elif self.p['COORD_SYSTEM'] == 'torus':
+        elif self.p['coord_system'] == 'torus':
             tree_points = self.__lorenz_wrap(boid_xs)
-            tree = KDTree(tree_points, boxsize=self.p['SIM_WIDTH'])
+            tree = KDTree(tree_points, boxsize=self.p['sim_width'])
             
-        align_lists = tree.query_ball_point(tree_points,r=self.p['RAD_ALIGNMENT'])
-        repul_lists = tree.query_ball_point(tree_points,r=self.p['RAD_REPULSION'])
-        homing_lists = tree.query_ball_point(tree_points,r=self.p['RAD_HOMING'])
+        align_lists = tree.query_ball_point(tree_points,r=self.p['rad_alignment'])
+        repul_lists = tree.query_ball_point(tree_points,r=self.p['rad_repulsion'])
+        homing_lists = tree.query_ball_point(tree_points,r=self.p['rad_homing'])
 
         # this is iterating through each boid and applying its force
         for i, (x,v) in enumerate(zip(boid_xs,boid_vs)):
@@ -132,9 +157,9 @@ class BoidSimulator:
 
     def __lorenz_equations(self,t,start_states):
         x,y,z = start_states
-        dxBYdt = self.p['L_SIGMA'] * (y-x)
-        dyBYdt = x * (self.p['L_RHO'] - z) - y
-        dzBYdt = (x * y) - (self.p['L_BETA'] * z)
+        dxBYdt = self.p['l_sigma'] * (y-x)
+        dyBYdt = x * (self.p['l_rho'] - z) - y
+        dzBYdt = (x * y) - (self.p['l_beta'] * z)
         return dxBYdt,dyBYdt,dzBYdt
 
     def generate_lorenz(self,simulation_steps, sample_rate, x_init, y_init, z_init,norm_std=2):
@@ -153,7 +178,6 @@ class BoidSimulator:
 
         return lorenz_series
 
-
     def generate_flock(self,flock_size,spawn_bounds,random_velocity=False,random_position=False):
         #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
         spawn_min = min(spawn_bounds)
@@ -161,10 +185,10 @@ class BoidSimulator:
         spawn_width = np.abs(spawn_max-spawn_min)
 
         self.set_seed(random_position) #undo the random seed (may not do anything if already not random)
-        if self.p['COORD_SYSTEM']=='flat':
+        if self.p['coord_system']=='flat':
             x = spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
-        elif self.p['COORD_SYSTEM']=='torus':
-            x = self.p['SIM_WIDTH']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
+        elif self.torus:
+            x = self.p['sim_width']/2+spawn_min + spawn_width * np.random.beta(2, 2, size=(flock_size, 2))
         self.set_seed(self.using_seed) #reapply the random seed (if its being used)
 
         self.set_seed(random_velocity) #undo the random seed (may not do anything if already not random)
@@ -179,7 +203,7 @@ class BoidSimulator:
             assumes to take same positions in shape (n,2) (where n is the number of things with a position)
         '''
         #python modulo wraps negative numbers in the way one expects
-        wrapped = positions%self.p['SIM_WIDTH']
+        wrapped = positions%self.p['sim_width']
         return wrapped
 
     def __physics_step(self,current_pos,current_vel,prior_lorenz_x):
@@ -193,15 +217,15 @@ class BoidSimulator:
         fm = self.__force_matrix(current_x,current_v,prior_lorenz_x)
 
         # Update velocity and position matrix
-        new_v = current_v + (fm * self.p['DELTA_T'])
-        #new_x = current_x + (current_v * self.p['DELTA_T']) This is what Lymburn does but my superviser and I agree it's probably supposed to be done like the line below
-        new_x = current_x + (new_v * self.p['DELTA_T'])
+        new_v = current_v + (fm * self.p['delta_t'])
+        #new_x = current_x + (current_v * self.p['delta_t']) This is what Lymburn does but my superviser and I agree it's probably supposed to be done like the line below
+        new_x = current_x + (new_v * self.p['delta_t'])
 
         return new_v,new_x
 
     def run_simulation(self):
-        boid_count = self.p['BOID_COUNT']
-        simulation_steps = self.p['SIMULATION_STEPS']
+        boid_count = self.p['boid_count']
+        simulation_steps = self.p['simulation_steps']
         mode_shape = (simulation_steps,boid_count,2)
 
         if self.memory_mapping:
@@ -212,16 +236,16 @@ class BoidSimulator:
             positions = np.zeros(mode_shape)
             velocities= np.zeros(mode_shape)
 
-        self.spawn_bounds = (self.p['SPAWN_MIN'],self.p['SPAWN_MAX'])
+        self.spawn_bounds = (self.p['spawn_min'],self.p['spawn_max'])
 
-        lorenz = self.generate_lorenz(simulation_steps, self.p['L_SAMPLING_RATE'], self.p['X_LORENZ'], self.p['Y_LORENZ'], self.p['Z_LORENZ'])
-        p, v = self.generate_flock(boid_count, self.spawn_bounds, self.p['RANDOM_VELOCITY'], self.p['RANDOM_POSITION'])
+        lorenz = self.generate_lorenz(simulation_steps, self.p['l_sampling_rate'], self.p['x_lorenz'], self.p['y_lorenz'], self.p['z_lorenz'])
+        p, v = self.generate_flock(boid_count, self.spawn_bounds, self.p['random_velocity'], self.p['random_position'])
 
-        if self.p['COORD_SYSTEM']=='torus':
+        if self.torus:
             p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
 
             #1. Center lorenz around a center where 
-            lorenz = lorenz+self.p['SIM_WIDTH']/2
+            lorenz = lorenz+self.p['sim_width']/2
             #2. Wrap the recentered lorenz
             lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
         
@@ -235,7 +259,7 @@ class BoidSimulator:
 
             new_v, new_x = self.__physics_step(current_pos, current_vel, lorenz[t])
 
-            if self.p['COORD_SYSTEM'] == 'torus':
+            if self.p['coord_system'] == 'torus':
                 new_x = self.__lorenz_wrap(new_x)
 
             positions[t + 1] = new_x
@@ -255,3 +279,21 @@ class BoidSimulator:
             "config":self.p
         }
 
+    @staticmethod
+    def construct_view_dict(datas:list):
+        """
+        This function is used for converting the data output of my simulator into the more standardised input required by functions in BoidVisualiser.py
+        In other words, the function exists for compatability sake.
+        Parameters
+        ----------
+        datas : list
+            list of data outputs from the class
+        """
+        replicas_for_visualiser = []
+        for d in datas:
+            pos = d['positions']
+            vel = d['velocities']
+            signal = d['predator_positions']
+            replica_dict = {'positions':pos,'velocities':vel,'input_signal':signal}
+            replicas_for_visualiser.append(replica_dict)
+        return replicas_for_visualiser

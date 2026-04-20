@@ -1,3 +1,5 @@
+from os.path import samefile
+from numpy import sign
 from tqdm import trange
 import argparse
 import os
@@ -5,8 +7,8 @@ import matplotlib.pyplot as plt
 
 from .SaverLoader import Saver, find_npzs
 from .BoidSimulator import BoidSimulator
-from .BoidVisualizer import BoidVisualizer
-from .ConfigManager import load_config, generate_config
+from .BoidVisualiser import flat_render,torus_render
+from .ConfigManager import load_config, generate_config, compare_params
 
 
 parser = argparse.ArgumentParser()
@@ -67,8 +69,18 @@ def main(custom_args=None):
     #(1)
     if view and not run:
         datas = find_npzs(view)
-        bv = BoidVisualizer(datas)
-        ani = bv.get_animation(overlay=True)
+        same,difference_str = compare_params(datas,["coord_system","sim_width"])
+        if not same:
+            raise Exception(f"The simulations loaded do not have the same coordinate_system or simulation_width. See parameter comparison table below:{difference_str}")
+        
+        replicas = BoidSimulator.construct_view_dict(datas)
+
+        if datas[0]["coord_system"] == 'flat':
+            animation = flat_render(replicas,overlay=True,animate=True)
+        else:
+            sw = datas[0]["sim_width"]
+            animation = torus_render(replicas,sim_width=sw,overlay=True,animate=True)
+
         plt.show()
         return 
 
@@ -90,10 +102,14 @@ def main(custom_args=None):
 
 
         if view: 
-            bv = BoidVisualizer(datas)
-            ani = bv.get_animation(overlay=True)
+            replicas = BoidSimulator.construct_view_dict(datas)
+            if simulation_parameters["coord_system"] == 'flat':
+                animation = flat_render(replicas,overlay=True,animate=True)
+            else:
+                sw = simulation_parameters["sim_width"]
+                animation = torus_render(replicas,sim_width=sw,overlay=True,animate=True)
             plt.show()
-        
+        #TODO torus render not working yet
         return datas
 
     raise Exception('No arguments were given but parser help cant be printed')

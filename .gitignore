@@ -2,7 +2,10 @@ gifs
 images
 __pycache__
 tests/**/*
+new_tests/**/*
 
+
+/testing.ipynb
 notes-to-self.txt
 
 /tmp
@@ -20,4 +23,4 @@ dfwm.txt
 
 /setup_alias.sh
 
-lymurb_figures_recreated/**.png
+lymurb_figures_recreated/

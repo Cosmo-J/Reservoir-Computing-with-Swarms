@@ -1,20 +1,17 @@
+from typing import Iterable
 import numpy as np
 from abc import ABC, abstractmethod
 from sklearn.linear_model import Ridge
 from sklearn.linear_model import RidgeCV
 
 from .ConfigManager import compare_params
-from .SaverLoader import create_mmap
+from .SaverLoader import create_mmap, TMP_PATH,cleanup_tmps
 
 from tqdm import trange,tqdm
-from concurrent.futures import ThreadPoolExecutor as TPE, as_completed
 from matplotlib import pyplot as plt
-from matplotlib.widgets import Slider
 from scipy.spatial import KDTree
 import os
 import gc
-
-TMP_PATH = 'tmp'
 
 class ObservationAndPrediction(ABC):
     """
@@ -70,18 +67,25 @@ class ObservationAndPrediction(ABC):
             driving signal, as this attribute is also used in calculations involving replica2.
     """
 
+
     def __init__(self,replica1,replica2,washout,chunk_size=5000,cleanup_tmps=True):
+        self.tmp_paths = []
+        
         self.replica1 = replica1.copy()
         self.replica2 = replica2.copy()
 
         #validating paramaters
-        same_params, table = compare_params(self.replica1.get('config').item(),self.replica2.get('config').item())
+        same_params, table = compare_params([self.replica1.get('config').item(),self.replica2.get('config').item()])
         if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
+
         if not np.allclose(self.replica1.get('predator_positions'), self.replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
-        conf = self.replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
-        if washout > conf['SIMULATION_STEPS']: raise ValueError("Washout greater or equal to number of time steps.")
-        if washout > conf['SIMULATION_STEPS']/2: print(f"WARNING: Washout accounts for {int(washout/conf['SIMULATION_STEPS'])}% of total time steps.")
-        if chunk_size > conf['SIMULATION_STEPS']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
+        
+        self.config = self.replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
+        
+        if washout > self.config['simulation_steps']: raise ValueError("Washout greater or equal to number of time steps.")
+        if washout > self.config['simulation_steps']/2: print(f"WARNING: Washout accounts for {int(washout/self.config['simulation_steps'])}% of total time steps.")
+        
+        if chunk_size > self.config['simulation_steps']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
 
         self.washout_data(washout)
         self.lorenz = self.replica1.get('predator_positions')
@@ -92,8 +96,7 @@ class ObservationAndPrediction(ABC):
 
         self.memory_map = bool(rep1_memmap or rep2_memmap)
         self.chunk_size=chunk_size
-        
-        self.tmp_paths = []
+
 
         if self.memory_map:
             self.tmp_paths.append(rep1_memmap)
@@ -121,7 +124,7 @@ class ObservationAndPrediction(ABC):
         
         for obj in gc.get_objects():
             if isinstance(obj, ObservationAndPrediction):
-                for path in obj.tmp_paths:
+                for path in getattr(obj, "tmp_paths", []):
                     found_refs.add(path)
 
         orphans = tmp_files_paths - found_refs
@@ -186,232 +189,249 @@ class ObservationAndPrediction(ABC):
         return vectorise_me
 
 
-    @abstractmethod
     def calc_consistency_profile(self,sv1,sv2,methodology):
         """
-        Calculate the consistency profile of a reservoir readout as described in the appendix of Lymburn et al (2021). 
-        Allows for the specific `methodology` of calculating the consistency profile to be specified in allowance of the fact
-        that Lymburn et al's methodology can be interpreted in multiple ways.
+            Calculate the consistency profile of a reservoir readout as described in the appendix of Lymburn et al (2021). 
+            Allows for the specific `methodology` of calculating the consistency profile to be specified in allowance of the fact
+            that Lymburn et al's methodology can be interpreted in multiple ways.
 
-        Parameters
-        ----------
-        sv1 : np.ndarray, shape(N,F)
-            Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
-            Numpy array with shape N simulation_steps/samples and F features/modes.
-        sv2 : np.ndarray, shape(N,F)
-            Same as sv1 except for replica2.
-        methodology : str
-            `function.__name__` reference of a given methodology for calculating the consistency profile.
+            Parameters
+            ----------
+            sv1 : np.ndarray, shape(N,F)
+                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
+                Numpy array with shape N simulation_steps/samples and F features/modes.
+            sv2 : np.ndarray, shape(N,F)
+                Same as sv1 except for replica2.
+            methodology : str
+                `function.__name__` reference of a given methodology for calculating the consistency profile.
 
-        Returns
-        -------
-        consistent_capacity : float
-            
-            - theta 
-            - consistent capacity
-            - trace of the cross-covariance of `sv1` and `sv2`
+            Returns
+            -------
+            consistent_capacity : float
+                
+                - theta 
+                - consistent capacity
+                - trace of the cross-covariance of `sv1` and `sv2`
 
-        gamma_sqaured : list[floats]
+            gamma_sqaured : list[floats]
 
-            - eigenvalues of the cross-covariance of `sv1` and `sv2`
-        """        
-        pass
-
-
-
-    def _mean(self,sv):
+                - eigenvalues of the cross-covariance of `sv1` and `sv2`
         """
-        Internal helper function for calculating the mean of a state vector. In other words, the average value of each feature across time.
-
-        Parameters
-        ----------
-        sv : np.ndarray, shape(N,F)
-
-            N simulation_steps/samples, F features/modes.
-
-            Vectorised readout of a given replica across time.
         
-        Returns
-        -------
-        np.ndarray or np.memmap, shape(F,)
-            Numpy array with each mode time averaged.
+        methodology_found = getattr(self, methodology, None)
+        if methodology_found is None or not callable(methodology_found):
+            raise AttributeError(f"Function {methodology} not found within {self.__class__.__name__}.")
+        else:
+            methodology = self.__getattribute__(methodology)
 
-        Notes
-        -----
-        The usefulness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
-        to find the mean:
-        
-        - using chunks and `.npy` files.
-        - using a single line operation `np.mean(sv,axis=0)`.
+        return methodology(sv1,sv2)
 
-        Intended to be used inside different consistency profile methodologies to protect
-        against overloading one's RAM given a very long time series replica.
-        """        
+
+    # Helpers for calculating things using chunks
+    def _mean(self,sv,axis=0):
+        #TODO update docstring
+        """
+            Internal helper function for calculating the mean of a state vector. In other words, the average value of each feature across time.
+
+            Parameters
+            ----------
+            sv : np.ndarray, shape(N,F)
+
+                N simulation_steps/samples, F features/modes.
+
+                Vectorised readout of a given replica across time.
+            
+            Returns
+            -------
+            np.ndarray or np.memmap, shape(F,)
+                Numpy array with each mode time averaged.
+
+            Notes
+            -----
+            The usefulness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
+            to find the mean:
+            
+            - using chunks and `.npy` files.
+            - using a single line operation `np.mean(sv,axis)`.
+
+            Intended to be used inside different consistency profile methodologies to protect
+            against overloading one's RAM given a very long time series replica.
+        """      
         if self.memory_map:
             simulation_steps,features = sv.shape
+
             total_sum = np.zeros(features, dtype='float64')
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean',leave=True,position=1):
                 chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
-                
                 sv_chunk = sv[chunk_start:chunk_end]
-
                 chunk_sum = np.sum(sv_chunk,axis=0)
-
                 total_sum += chunk_sum
 
             return total_sum / simulation_steps
         else:
-            return np.mean(sv,axis=0)
+            return np.mean(sv,axis)
 
+    def _std(self,sv,axis=0):
+        if self.memory_map:
+            simulation_steps,features = sv.shape
+            total_sum = np.zeros(features, dtype='float64')
+
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Std',leave=True,position=1):
+                chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
+                sv_chunk = sv[chunk_start:chunk_end]**2
+                chunk_sum = np.sum(sv_chunk,axis)
+                total_sum += chunk_sum
+
+            return total_sum / simulation_steps
+        else:
+            return np.std(sv,axis)  
 
     def _center(self,sv):
         """
-        Centers a given vector so that it has a zero mean. Similar to `_mean()` with the addition of subtracting the mean from the vector `sv1` feature wise.
+            Centers a given vector so that it has a zero mean. Similar to `_mean()` with the addition of subtracting the mean from the vector `sv1` feature wise.
 
-        Parameters
-        ----------
-        sv : np.ndarray, shape(N,F)
+            Parameters
+            ----------
+            sv : np.ndarray, shape(N,F)
 
-            N simulation_steps/samples, F features/modes.
+                N simulation_steps/samples, F features/modes.
 
-            Vectorised readout of a given replica across time.
+                Vectorised readout of a given replica across time.
 
-        Returns
-        -------
-        np.ndarray or np.memmap, shape(N,F)
-            same shape as the given vector except features now have a zero mean.
+            Returns
+            -------
+            np.ndarray or np.memmap, shape(N,F)
+                same shape as the given vector except features now have a zero mean.
+            list
+                list of paths to temporary files created 
 
-        Notes
-        -----
-        The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
-        to find the center:
-        
-        - using chunks and `.npy` files.
-        - using a single line operation `sv - np.mean(sv,axis=0)`.
+            Notes
+            -----
+            The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
+            to find the center:
+            
+            - using chunks and `.npy` files.
+            - using a single line operation `sv - np.mean(sv,axis=0)`.
 
-        Intended to be used inside different consistency profile methodologies to protect
-        against overloading one's RAM given a very long time series replica.
-        """        
+            Intended to be used inside different consistency profile methodologies to protect
+            against overloading one's RAM given a very long time series replica.
+        """  
+
+        temp_file_paths = []      
         if self.memory_map:
             simulation_steps,features = sv.shape
-            total_sum = np.zeros(features,dtype='float64')
-
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
-                chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
-                sv_chunk = sv[chunk_start:chunk_end]
-                chunk_sum = np.sum(sv_chunk,axis=0)
-                total_sum += chunk_sum
-
-            sv_mean = total_sum / simulation_steps
-
+            sv_mean = self._mean(sv)
             sv_centered_npy, npy_path = create_mmap('sv_centered_',(simulation_steps,features))
-            self.tmp_paths.append(npy_path)
+            temp_file_paths.append(npy_path)
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean'):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Centring',leave=True,position=1):
                 chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
                 sv_chunk = sv[chunk_start:chunk_end]
                 chunk_centered = sv_chunk-sv_mean
                 sv_centered_npy[chunk_start:chunk_end] = chunk_centered
                 sv_centered_npy.flush()
 
-            return sv_centered_npy
+            return sv_centered_npy,temp_file_paths
         else:
-            return sv - np.mean(sv,axis=0)
-
+            centered = sv - np.mean(sv,axis=0)
+            return centered,temp_file_paths
 
     def _sv_transform(self,sv,transform):
         """
-        Apply a linear transform to state vector. 
+            Apply a linear transform to state vector. 
 
-        Parameters
-        ----------
-        sv : np.ndarray, shape(N,F)
-            State vector of N simulation_steps/samples and F features/modes.
-        
-        transform : np.ndarray, shape(F,F)
-            The transformation matrix applied to `sv`.
+            Parameters
+            ----------
+            sv : np.ndarray, shape(N,F)
+                State vector of N simulation_steps/samples and F features/modes.
+            
+            transform : np.ndarray, shape(F,F)
+                The transformation matrix applied to `sv`.
 
-        Returns
-        -------
-        np.ndarray or np.memmap, shape(N,F)
-            returns the state vector transformed. 
+            Returns
+            -------
+            np.ndarray or np.memmap, shape(N,F)
+                returns the state vector transformed. 
+            list
+                list of paths to temporary files created 
 
-        Notes
-        -----
-        The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
-        to calculate the transform:
-        
-        - using chunks and `.npy` files.
-        - using a single line operation `sv @ transform`.
+            Notes
+            -----
+            The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
+            to calculate the transform:
+            
+            - using chunks and `.npy` files.
+            - using a single line operation `sv @ transform`.
 
-        Intended to be used inside different consistency profile methodologies to protect
-        against overloading one's RAM given a very long time series replica.
+            Intended to be used inside different consistency profile methodologies to protect
+            against overloading one's RAM given a very long time series replica.
 
         """
 
+        temp_file_paths = []
         if self.memory_map:
             simulation_steps, features = sv.shape
             mat_mul_out, npy_path = create_mmap('mat_mul_', (simulation_steps, features))
-            self.tmp_paths.append(npy_path)
+            temp_file_paths.append(npy_path)
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked matrix multiplication"):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked matrix multiplication",leave=True,position=1):
                 chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
-
                 mat_mul_out[chunk_start:chunk_end] = sv[chunk_start:chunk_end] @ transform
         
             mat_mul_out.flush()
-            return mat_mul_out
+            return mat_mul_out,temp_file_paths
         else:
-            return sv @ transform
-
+            matmul = sv @ transform
+            return matmul,temp_file_paths
 
     def _covariance(self,sv1,sv2=None,center=False):
         """
-        Calculates the covariance between two state vectors.
+            Calculates the covariance between two state vectors.
 
-        Parameters
-        ----------
-        sv1 : np.ndarray, shape(T,F)
-            state vector with shape (T,F) T samples/timesteps and F features/modes.
-        sv2 : np.ndarray, shape(T,F), optional
-            state vector with shape (T,F) T samples/timesteps and F features/modes.
+            Parameters
+            ----------
+            sv1 : np.ndarray, shape(T,F)
+                state vector with shape (T,F) T samples/timesteps and F features/modes.
+            sv2 : np.ndarray, shape(T,F), optional
+                state vector with shape (T,F) T samples/timesteps and F features/modes.
 
-            - if sv2 is None, autocovariance is calculated using sv1.
+                - if sv2 is None, autocovariance is calculated using sv1.
 
-        center : bool, optional
+            center : bool, optional
 
-            - True: centers the state vectors using the values from internal function `_mean`.
-            - False: calculates the covariance with the assumption that state vectors already have 0 mean.
+                - True: centers the state vectors using the values from internal function `_mean`.
+                - False: calculates the covariance with the assumption that state vectors already have 0 mean.
 
-        Returns
-        -------
+            Returns
+            -------
             np.ndarray, shape(F,F)
+                covariance matrix
 
-        Notes
-        -----
-        The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
-        to calculate the covariance:
-        
-        - using chunks and `.npy` files.
-        - using a few lines.
+            Notes
+            -----
+            The usefullness of this function is that, depending on the class instance's `memory_map` attribute it automatically determines whether
+            to calculate the covariance:
+            
+            - using chunks and `.npy` files.
+            - using a few lines.
 
-        Intended to be used inside different consistency profile methodologies to protect
-        against overloading one's RAM given a very long time series replica.
+            Intended to be used inside different consistency profile methodologies to protect
+            against overloading one's RAM given a very long time series replica.
 
 
-        - Assumes that F isn't super large and so the returned np.ndarray can live in memory.
+            - Assumes that F isn't super large and so the returned np.ndarray can live in memory.
         """      
 
         if sv2 is None:
             sv2 = sv1
             if center:
-                sv1_mean = self._mean(sv1)
+                sv1_mean = self._mean(sv1,0)
                 sv2_mean = sv1_mean
         else:
             if center:
-                sv1_mean = self._mean(sv1)
-                sv2_mean = self._mean(sv2)
+                sv1_mean = self._mean(sv1,0)
+                sv2_mean = self._mean(sv2,0)
         if not center:
             sv1_mean = np.zeros(sv1.shape[1],dtype='float64')
             sv2_mean = np.zeros(sv2.shape[1],dtype='float64')
@@ -423,7 +443,7 @@ class ObservationAndPrediction(ABC):
 
             covariances = np.zeros((feats1, feats2), dtype='float64')
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance"):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance",leave=True,position=1):
                 chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
 
                 sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
@@ -440,7 +460,8 @@ class ObservationAndPrediction(ABC):
             return (sv1_centered.T @ sv2_centered) / (simulation_steps-1)
 
 
-    def ridge_prediction(self,state_vector,train_size=0.6,prediction_distance=1,ridge_alpha=None):
+    # Profiling methods
+    def ridge_prediction(self,state_vector,train_size=0.6,prediction_distance=1,ridge_alpha=1):
         """
             Use ridge regression to make a prediction about the x position of the lorenz attractor using  a reservoir readout.
 
@@ -455,8 +476,10 @@ class ObservationAndPrediction(ABC):
                 prediction_distance : int, optional
                     Number of simulation steps into the future the ridge regression will attempt to fit. Defaults to 1.
 
-                ridge_alpha : float, optional 
-                    Defaults to None in which case an optimal alphas is calculated using `sklearn.linear_model.RidgeCV`. Otherwise, give a value to manually set alpha.
+                ridge_alpha : scaler,list, optional 
+                    Performs ridge with a validation step using the list of alphas with `sklearn.linear_model.RidgeCV`.
+                    Perform ridge using a scaler alpha value and perform no cross validation.
+                    Defaults to 1.
 
             Raises
             ------
@@ -472,72 +495,275 @@ class ObservationAndPrediction(ABC):
             alpha : float
             The alpha found if `ridge_alpha=None` (RidgeCV), otherwise, returns the parameter `ridge_alpha`
         """        
-        
+        temp_file_paths = []
         if state_vector.shape[0]<=prediction_distance:
             raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {state_vector.shape[0]}")
-
-        # y is an array of lorenz x coordinates starting from the prediction distance
-        y = self.lorenz[prediction_distance:,0]
-        new_total_time = len(y)
-        X = state_vector[:new_total_time]
-
-        split_idx = int(new_total_time * train_size)
-
-        X_train, y_train = X[:split_idx], y[:split_idx]
-        X_test, y_test = X[split_idx:], y[split_idx:]
         
-        mew = np.mean(X_train,axis=0)
-        sigma = np.std(X_train,axis=0)
+        with tqdm(desc="Ridge Prediction",position=0,leave=False) as pbar:
+            # y is an array of lorenz x coordinates starting from the prediction distance
+            y = self.lorenz[prediction_distance:,0]
+            new_total_time = len(y)
+            X = state_vector[:new_total_time]
 
-        X_train_stand = (X_train - mew)/sigma
-        X_test_norm = (X_test - mew)/sigma
+            split_idx = int(new_total_time * train_size)
 
-        if ridge_alpha == None:
-            alphas = np.logspace(-3, 8, 50)
-            #alphas=np.logspace(-6, 2, 20)
-            ridge = RidgeCV(alphas=alphas, cv=5)
-            ridge.fit(X_train_stand, y_train)
-            best_alpha = ridge.alpha_
-        else:
-            ridge = Ridge(alpha=ridge_alpha)
-            ridge.fit(X_train_stand, y_train)
-            best_alpha = ridge_alpha
+            X_train, y_train = X[:split_idx], y[:split_idx]
+            X_test, y_test = X[split_idx:], y[split_idx:]
+            pbar.update(1)
+            
+            mew = self._mean(X_train,axis=0)
+            sigma = self._std(X_train,axis=0)
+            pbar.update(1)
 
-        prediction = ridge.predict(X_test_norm)
+            if self.memory_map:
+                X_train_stand, train_path = create_mmap('X_train_stand', X_train.shape)
+                X_test_stand, test_path = create_mmap('X_test_norm', X_test.shape)
 
-        #equation 13 from Lymburn et al, cosin similarity
-        simulation_steps = y_test.shape[0]
-        numer = np.sum((prediction * y_test))/simulation_steps
-        denom = np.sqrt(np.mean(prediction**2) * np.mean(y_test**2))
+                temp_file_paths.append(train_path)
+                temp_file_paths.append(test_path)
 
-        corr_coef = numer/denom
+                sim_steps_train = X_train.shape[0]
+                for chunk_start in trange(0, sim_steps_train, self.chunk_size, desc='Chunked Standerdising Train',leave=True,position=1):
+                    chunk_end = min(chunk_start + self.chunk_size, sim_steps_train)
+                    X_train_stand[chunk_start:chunk_end] = (X_train[chunk_start:chunk_end] - mew) / sigma
+                X_train_stand.flush()
 
-        return prediction, corr_coef, best_alpha
+                sim_steps_test = X_test.shape[0]
+                for chunk_start in trange(0, sim_steps_test, self.chunk_size, desc='Chunked Standerdising Test',leave=True,position=1):
+                    chunk_end = min(chunk_start + self.chunk_size, sim_steps_test)
+                    X_test_stand[chunk_start:chunk_end] = (X_test[chunk_start:chunk_end] - mew) / sigma
+                X_test_stand.flush()
+            else:
+                X_train_stand = (X_train - mew)/sigma
+                X_test_stand = (X_test - mew)/sigma
+            pbar.update(1)
+
+            
+            if np.isscalar(ridge_alpha):
+                ridge = Ridge(alpha=float(ridge_alpha))
+                ridge.fit(X_train_stand, y_train)
+                best_alpha = ridge_alpha
+            else:
+                alphas = np.asarray(ridge_alpha, dtype=float).ravel()
+                if alphas.ndim != 1 or alphas.size == 0:
+                    raise ValueError("ridge_alpha must be a scalar or a 1D non-empty array-like of alphas.")
+                #alphas = np.logspace(-6, -2, 100)
+                #alphas=np.logspace(-6, 2, 20)
+                ridge = RidgeCV(alphas=ridge_alpha, cv=5)
+                ridge.fit(X_train_stand, y_train)
+                best_alpha = ridge.alpha_
+            pbar.update(1)
 
 
+            prediction = ridge.predict(X_test_stand)
+
+            #equation 13 from Lymburn et al, cosin similarity
+            simulation_steps = y_test.shape[0]
+            numer = np.sum((prediction * y_test))/simulation_steps
+            denom = np.sqrt(np.mean(prediction**2) * np.mean(y_test**2))
+
+            corr_coef = numer/denom
+            pbar.update(1)
+
+            cleanup_tmps(temp_file_paths)
+
+            return prediction, corr_coef, best_alpha
+
+
+    def v1(self,sv1,sv2):
+        temp_file_paths = []
+
+        sv1,tmp1 = self._center(sv1)
+        sv2,tmp2= self._center(sv2)
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+
+        """ condition explaination:
+                1. take unit circle (sphere/hypersphere)
+                2. apply matrix to it
+                3. circle becomes eliptic
+                4. sigma_min is the shortest axis and sigma_max is the longest axis
+
+            Condition is the ratio between sigma_max and sigma_min. If the ratio between them is larger than one,
+            it suggests that for some (vector x matrix) multiplication the vector might be unevenly strecthed across dimensions.
+            Regularily this is fine and in fact informative, although if the condition is greater than 1e8 (10mil) floating point
+            errors will occur and so data will be lost.
+        """
+
+        #calculating auto-covariance
+        cxx = self._covariance(sv1, center=False)
+
+        # "To ensure numerical stability, we add a small regularization term" - lymburn et al
+        cxx_reg = cxx + 1e-10 * np.eye(cxx.shape[0],dtype=np.float64)
+
+        Sigma, Q = np.linalg.eigh(cxx_reg) # eigendecompoise the autocovariance
+        assert np.linalg.cond(cxx_reg) < 1e16, f"{np.linalg.cond(cxx_reg)} - condition of matrix exceeds floating point limit 1e16 so data loss will be incurred by any transformation" 
+
+        #reconstructed = Q @ np.diag(Sigma) @ Q.T
+        #assert np.allclose(cxx_reg, reconstructed)
+
+        eig_inv_sqrt = 1/np.sqrt(Sigma)
+        Sigma_inv = np.diagflat(eig_inv_sqrt)
+
+        transformation = Q @ Sigma_inv @ Q.T
+
+        sv1o,tmp1 = self._sv_transform(sv1, transformation)
+        sv2o,tmp2 = self._sv_transform(sv2, transformation)
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        # The covariance of the whitened data MUST be the Identity matrix
+        #I = (sv1o.T @ sv1o) / sv1o.shape[0]
+        #assert np.allclose(np.eye(sv1o.shape[1]),I,atol=1e-1), "Normalisation transform did not produce a autocovariance which makes an identity matrix"
+
+        #cross-covariance
+        css = self._covariance(sv1o,sv2o,center=False)
+
+        '''
+        "While this is only true in the limit of infinite trajectories, we can enforce the structure by averaging on the diagonal and off-diagonal elements and thus better approximate the asymptotic behavior."
+        
+            whilst in the context of the paper this doesn't seem to be in relation to the observation kernels, it is also true that two 
+            kernel replicas aren't t->inf so produce an asymetric matrix and so an eigendecomposition doesn't work
+        '''
+        css_symm = (css + css.T) / 2
+        #assert np.allclose(css_symm,css_symm.T), "failed to make the matrix symetric"
+
+        # eigendecompoise the autocovariance
+        gamma2 = np.linalg.eigvalsh(css_symm)
+        consistent_capacity = np.trace(css_symm) # or could sum gamma2
+
+        #assert np.allclose(np.sum(gamma2),consistent_capacity)
+
+        cleanup_tmps(temp_file_paths)
+        return consistent_capacity,gamma2
+
+
+    def faithful(self,sv1,sv2):
+        """
+            This is a methodology for calculating the consistency profile. Named for the fact that it's the most literal interpretation of
+            the techniques described in section 1 of the appendix in Lymburn et al (2021).
+
+            Parameters
+            ----------
+            sv1 : np.ndarray, shape(N,F)
+                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
+                Numpy array with shape N simulation_steps/samples and F features/modes.
+            sv2 : np.ndarray, shape(N,F)
+                Same as sv1 except for replica2.
+
+            Returns
+            -------
+            consistent_capacity : float
+                
+                - theta 
+                - consistent capacity
+                - trace of the cross-covariance of `sv1` and `sv2`
+
+            gamma_sqaured : list[floats]
+
+                - eigenvalues of the cross-covariance of `sv1` and `sv2`
+
+            Notes
+            -----
+            This function does not demonstrate the most efficient way of performing these calculations, rather, it's intended to be very verbose to make it more comprehendible.
+        """        
+        temp_file_paths = []
+
+
+        '''
+            "responses may be labeled x(t) and x′(t) and are assumed to have zero mean"
+                this is why I center when calculating the covariance
+        '''
+        x1,tmp1 = self._center(sv1)
+        x2,tmp2 = self._center(sv2)
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+        
+        # "First, the covariance matrix is calculated as [Cxx]ij =〈xi(t) xj(t)"
+            #center seperatly here for optimisation reasons
+        Cxx = self._covariance(sv1,center=True)
+
+        # "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
+        Cxx_reg = Cxx + 1e-9 * np.eye(len(Cxx))
+
+
+        # "Eigendecomposition of this positive semi-definite matrix reads Cxx = QΣ²Qᵀ "
+        Sigma2, Q = np.linalg.eigh(Cxx_reg)
+        sigma_inverse = np.diag(1/np.sqrt(Sigma2))
+
+
+        # "The reservoir states are normalized with the transformation T◦ = QΣ⁻¹Qᵀ "
+        To = Q @ sigma_inverse @ Q.T
+
+
+        # "In the new coordinates x◦(t) = T◦x(t)"
+        """
+            Cosmo note: this is where the paper begins to be unclear. 
+                    It's suggested that the transform should be applied
+                    to both responses x(t), x'(t) and whilst 
+                    the transform should work for x(t) (the first response),
+                    it's was calculated from x(t)'s autocovariance, and
+                    therefore wouldn't neccesarily be an effective
+                    normalisation function for x'(t). This is because the 
+                    responses aren't using infinite samples and therefore
+                    wont have identical auto-covariance matricies.
+        """
+        # swapped the term position to properly match the shapes
+        X1o,tmp1 = self._sv_transform(x1,To)
+        X2o,tmp2 = self._sv_transform(x2,To)
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+        
+        # "cross-covariance matrix of the two replicas [Css]ij = 〈s◦,i(t)s◦,j(t)〉 = 〈x◦,i(t)x'◦,j(t)〉."
+        Css = self._covariance(X1o,X2o,center=False)
+
+
+        # "The eigendecomposition of this positive semi-definite matrix reads Css = Qss Σ²ss Qᵀss>. 
+        # The diagonal entries of 62 ss are the consistency correlations γ 2 k ."
+        Sigma2_ss = np.linalg.eigvals(Css) #using np.linalg.eigvals because Css isn't symetric
+
+
+        # "The diagonal entries of Σ²ss are the consistency correlations γ²k ."
+            # cosmo note: this step below is pointless code wise and simply is used to state that the eigenvalues are the gamma squared features
+        gamma_squared = Sigma2_ss
+
+
+        # appendix (1) equation (A4), defines that the consistent capacity is the trace of Css
+        consistent_capacity = np.trace(Css)
+        
+        cleanup_tmps(temp_file_paths)
+        return consistent_capacity,gamma_squared
+
+
+    # Plotting methods
     def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False):
         """
-        Intended to be used on the outputs of `ridge_prediction()`.
-        Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
+            Intended to be used on the outputs of `ridge_prediction()`.
+            Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
 
-        Parameters
-        ----------
-        prediction : np.ndarray
-            Shape (N,) which is the predicted position of the lorenz attractor at each N time step. Intended to be used with `ridge_prediction()`.
-        corr_coef : float
-            float correlation coefficient which is displayed at the top of the plot.
-        x_range : tuple[float,float], optional
-            The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
-        simulation_steps : bool
-            Whether to display t as equaling simulation steps, or time time steps. Default false, therefore t=time steps.
+            Parameters
+            ----------
+            prediction : np.ndarray
+                Shape (N,) which is the predicted position of the lorenz attractor at each N time step. Intended to be used with `ridge_prediction()`.
+            corr_coef : float
+                float correlation coefficient which is displayed at the top of the plot.
+            x_range : tuple[float,float], optional
+                The range of simulation steps to be displayed on the plot. `None` by default which shows the whole range [0,N].
+            simulation_steps : bool
+                Whether to display t as equaling simulation steps, or time time steps. Default false, therefore t=time steps.
 
-        Returns
-        -------
-        `~matplotlib.axes.Axes`
-            returns an axes which you can add to other plots or just display on its own.
-        
-        See Also
-        --------
+            Returns
+            -------
+            `~matplotlib.axes.Axes`
+                returns an axes which you can add to other plots or just display on its own.
+            
+            See Also
+            --------
             `ridge_prediction()` : For getting `prediction` and `corr_coef`
         """        
         lorenz_x_shifted = self.lorenz[prediction_distance:,0]
@@ -550,8 +776,7 @@ class ObservationAndPrediction(ABC):
         elif x_range[0]>len(lorenz_x):
             raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(lorenz_x)}")
     
-        configs = self.replica1.get('config').item()
-        sim_delta_t = configs['DELTA_T']
+        sim_delta_t = self.config['delta_t']
 
         if simulation_steps:
             look_ahead = prediction_distance
@@ -591,27 +816,27 @@ class ObservationAndPrediction(ABC):
 
     def plot_consistency_profile(self,consistent_capacity,gamma2_vector,truncated_to=100,cc_dp=1,show_consistent_capacity=True,dpi=200):
         """
-        Used to plot the consistent capacity of a reservoir in the way of Lymburn et al (2021) figures 2b and 5b.
+            Used to plot the consistent capacity of a reservoir in the way of Lymburn et al (2021) figures 2b and 5b.
 
-        Parameters
-        ----------
-        consistent_capacity : float
-            consistent capacity as calculated by `calc_consistency_profile`.
-        gamma2_vector : list[float]
-            List of the gamma squared values, where each value is the consistency correlation of each mode.
-        truncated_to : int, optional
-            The number of modes or gamma squared values shown on the plot, by default 100 in parity with Lymburn et al (2021).
-        cc_dp : int, optional
-            the number of decimal places the consistent capacity is rounded to in the plot, by default 1
-        show_consistent_capacity : bool, optional
-            Whether to display the consistent capacity inside the plot, by default True.
-        dpi : int, optional
-            the resolution of the plot, dots per inch, by default 200.
+            Parameters
+            ----------
+            consistent_capacity : float
+                consistent capacity as calculated by `calc_consistency_profile`.
+            gamma2_vector : list[float]
+                List of the gamma squared values, where each value is the consistency correlation of each mode.
+            truncated_to : int, optional
+                The number of modes or gamma squared values shown on the plot, by default 100 in parity with Lymburn et al (2021).
+            cc_dp : int, optional
+                the number of decimal places the consistent capacity is rounded to in the plot, by default 1
+            show_consistent_capacity : bool, optional
+                Whether to display the consistent capacity inside the plot, by default True.
+            dpi : int, optional
+                the resolution of the plot, dots per inch, by default 200.
 
-        Returns
-        -------
-        `~matplotlib.axes.Axes`
-            returns an axes which you can add to other plots or just display on its own.
+            Returns
+            -------
+            `~matplotlib.axes.Axes`
+                returns an axes which you can add to other plots or just display on its own.
         """        
         
         gamma2_k_ranked = np.sort(gamma2_vector,)[::-1]
@@ -694,8 +919,6 @@ class KernelReadout(ObservationAndPrediction):
             replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
             driving signal, as this attribute is also used in calculations involving replica2.
     """
-
-
     def __init__(self,replica1,replica2,kernel_number,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
@@ -795,7 +1018,7 @@ class KernelReadout(ObservationAndPrediction):
             r1_t = []
             r2_t = []
             r3_t = []
-            for start in tqdm(chunk_starts, desc="Serial Chunks"):
+            for start in tqdm(chunk_starts, desc="Serial Chunks",leave=True,position=1):
                 chunk_end = min(start + self.chunk_size, simulation_steps)
 
                 #of this chunk
@@ -838,189 +1061,6 @@ class KernelReadout(ObservationAndPrediction):
 
         return readouts
 
-    def v1(self,sv1,sv2):
-        sv1 = sv1 - np.mean(sv1,axis=0)
-        sv2 = sv2 - np.mean(sv2,axis=0)
-
-        """ condition explaination:
-                1. take unit circle (sphere/hypersphere)
-                2. apply matrix to it
-                3. circle becomes eliptic
-                4. sigma_min is the shortest axis and sigma_max is the longest axis
-
-            Condition is the ratio between sigma_max and sigma_min. If the ratio between them is larger than one,
-            it suggests that for some (vector x matrix) multiplication the vector might be unevenly strecthed across dimensions.
-            Regularily this is fine and in fact informative, although if the condition is greater than 1e8 (10mil) floating point
-            errors will occur and so data will be lost.
-        """
-
-        #calculating auto-covariance
-        cxx = (sv1.T@sv1)/sv1.shape[0]
-
-        # "To ensure numerical stability, we add a small regularization term" - lymburn et al
-        cxx_reg = cxx + 1e-10 * np.eye(len(cxx))
-        Sigma, Q = np.linalg.eigh(cxx_reg) # eigendecompoise the autocovariance
-        assert np.linalg.cond(cxx_reg) < 1e16, \
-            f"{np.linalg.cond(cxx_reg)} - condition of matrix exceeds floating point limit 1e16 so data loss will be incurred by any transformation" 
-
-        reconstructed = Q @ np.diag(Sigma) @ Q.T
-        assert np.allclose(cxx_reg, reconstructed)
-
-        eig_inv_sqrt = 1/np.sqrt(Sigma)
-        Sigma_inv = np.diagflat(eig_inv_sqrt)
-
-        transformation = Q @ Sigma_inv @ Q.T
-
-        sv1o = sv1@transformation
-        sv2o = sv2@transformation
-
-        # The covariance of the whitened data MUST be the Identity matrix
-        I = (sv1o.T @ sv1o) / sv1o.shape[0]
-        assert np.allclose(np.eye(sv1o.shape[1]),I,atol=1e-1), "Normalisation transform did not produce a autocovariance which makes an identity matrix"
-
-        #cross-covariance
-        css = (sv1o.T @ sv2o)/sv1o.shape[0]
-
-        '''
-        "While this is only true in the limit of infinite trajectories, we can enforce the structure by averaging on the diagonal and off-diagonal elements and thus better approximate the asymptotic behavior."
-        
-            whilst in the context of the paper this doesn't seem to be in relation to the observation kernels, it is also true that two 
-            kernel replicas aren't t->inf so produce an asymetric matrix and so an eigendecomposition doesn't work
-        '''
-        css_symm = (css + css.T) / 2
-        assert np.allclose(css_symm,css_symm.T), "failed to make the matrix symetric"
-
-        # eigendecompoise the autocovariance
-        gamma2 = np.linalg.eigvalsh(css_symm)
-        consistent_capacity = np.trace(css_symm) # or could sum gamma2
-
-        assert np.allclose(np.sum(gamma2),consistent_capacity)
-
-        return consistent_capacity,gamma2
-
-
-    def faithful(self,sv1,sv2):
-        """
-        This is a methodology for calculating the consistency profile. Named for the fact that it's the most literal interpretation of
-        the techniques described in section 1 of the appendix in Lymburn et al (2021).
-
-        Parameters
-        ----------
-        sv1 : np.ndarray, shape(N,F)
-            Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
-            Numpy array with shape N simulation_steps/samples and F features/modes.
-        sv2 : np.ndarray, shape(N,F)
-            Same as sv1 except for replica2.
-
-        Returns
-        -------
-        consistent_capacity : float
-            
-            - theta 
-            - consistent capacity
-            - trace of the cross-covariance of `sv1` and `sv2`
-
-        gamma_sqaured : list[floats]
-
-            - eigenvalues of the cross-covariance of `sv1` and `sv2`
-
-        Notes
-        -----
-        This function does not demonstrate the most efficient way of performing these calculations, rather, it's intended to be very verbose to make it more comprehendible.
-        """        
-        
-        '''
-            "responses may be labeled x(t) and x′(t) and are assumed to have zero mean"
-                this is why I center when calculating the covariance
-        '''
-        x1 = self._center(sv1)
-        x2 = self._center(sv2)
-
-        '''
-            "First, the covariance matrix is calculated as 
-                [Cxx]ij =〈xi(t) xj(t)"
-
-            center seperatly here for optimisation reasons
-        '''
-
-        Cxx = self._covariance(sv1,center=True)
-
-        '''
-            "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
-        '''
-        Cxx_reg = Cxx + 1e-9 * np.eye(len(Cxx))
-
-
-        '''
-            "Eigendecomposition of this positive semi-definite matrix reads 
-                Cxx = QΣ²Qᵀ "
-        '''
-        Sigma2, Q = np.linalg.eigh(Cxx_reg)
-        sigma_inverse = np.diag(1/np.sqrt(Sigma2))
-
-
-        '''
-            "The reservoir states are normalized with the transformation 
-                T◦ = QΣ⁻¹Qᵀ "
-        '''
-        To = Q @ sigma_inverse @ Q.T
-
-
-        '''
-            "In the new coordinates x◦(t) = T◦x(t)"
-
-                Cosmo note: this is where the paper begins to be unclear. 
-                            It's suggested that the transform should be applied
-                            to both responses x(t), x'(t) and whilst 
-                            the transform should work for x(t) (the first response),
-                            it's was calculated from x(t)'s autocovariance, and
-                            therefore wouldn't neccesarily be an effective
-                            normalisation function for x'(t). This is because the 
-                            responses aren't using infinite samples and therefore
-                            wont have identical auto-covariance matricies.
-        '''
-        # swapped the term position to properly match the shapes
-        X1o = self._sv_transform(x1,To)
-        X2o = self._sv_transform(x2,To)
-
-        '''
-            "cross-covariance matrix of the two replicas [Css]ij = 〈s◦,i(t)s◦,j(t)〉 = 〈x◦,i(t)x'◦,j(t)〉."
-        '''
-        Css = self._covariance(X1o,X2o,center=False)
-
-
-        '''
-            "The eigendecomposition of this positive semi-definite matrix reads Css = Qss Σ²ss Qᵀss>. 
-            The diagonal entries of 62 ss are the consistency correlations γ 2 k ."
-        '''
-        Sigma2_ss = np.linalg.eigvals(Css) #using np.linalg.eigvals because Css isn't symetric
-
-
-        '''
-            "The diagonal entries of Σ²ss are the consistency correlations γ²k ."
-                cosmo note: this step below is pointless code wise and simply is used to state that the eigenvalues are the gamma squared features
-        '''
-        gamma_squared = Sigma2_ss
-
-
-        '''
-            appendix (1) equation (A4), defines that the consistent capacity is the trace of Css
-        '''
-        consistent_capacity = np.trace(Css)
-
-        return consistent_capacity,gamma_squared
-
-    #TODO get rid of this function and the one in flat readout, instead put the functionality in the super function and check against the object instance when determining whether the methodology is valid. Can even add a message saying like "Methodology not found, maybe you intended to create a KernelReadout object?" etc etc
-    def calc_consistency_profile(self,sv1,sv2, methodology:str):
-        options = [self.faithful.__name__,self.v1.__name__]
-
-        if methodology not in options:
-            raise Exception(f"Available methods for KernelReadout are {options}")
-        else:
-            methodology = self.__getattribute__(methodology)
-
-        return methodology(sv1,sv2)
-
 
 class NaiveReadout(ObservationAndPrediction):
     """
@@ -1037,7 +1077,6 @@ class NaiveReadout(ObservationAndPrediction):
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `COMReadout` : Subclass which is used to perform a center of mass readout.
     """
-
     def __init__(self,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
     
@@ -1057,7 +1096,7 @@ class NaiveReadout(ObservationAndPrediction):
                 self.tmp_paths.append(npy_path)
 
                 chunk_starts = range(0, simulation_steps, self.chunk_size)
-                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
                     chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                     chunk_data = x[chunk_start:chunk_end]
                     npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
@@ -1070,65 +1109,122 @@ class NaiveReadout(ObservationAndPrediction):
         return readouts
     
 
-    def faithful(self, sv1, sv2):
-        '''
-            implements the equations outlined in the appendix A1-A4
-        '''
-        simulation_steps,modes = sv1.shape
+    def appendix_2(self, sv1, sv2, regularization=1e-9):
+        """
+        Consistency profile for the naive/flat swarm readout, using the
+        permutation-symmetry reduction from Appendix A.2 of Lymburn et al. (2021).
 
-        #force them to have zero mean
-        x1 = sv1 - np.mean(sv1,axis=0)
-        x2 = sv2 - np.mean(sv2,axis=0)
+        Assumes `sv1` and `sv2` come from this class's flat readout, i.e.
+        the positions were flattened from shape (T, N_agents, D) to (T, N_agents*D)
+        in default C-order:
+            [x_1, y_1, x_2, y_2, ..., x_N, y_N]   for D=2
 
-        assert np.allclose(np.mean(x1),np.mean(x2))
+        Returns
+        -------
+        consistent_capacity : float
+        gamma_squared : np.ndarray, shape (modes,)
+            Full consistency spectrum. By symmetry only `D` entries are non-zero
+            asymptotically; the rest are returned as zeros.
+        """
+        # zero-mean replicas, consistent with Appendix A
+        x1 = self._center(sv1)
+        x2 = self._center(sv2)
 
-        #x1 autocovariance
-        cxx = (x1.T@x1)/ simulation_steps
+        simulation_steps, modes = x1.shape
+        spatial_dims = self.replica1["positions"].shape[-1]
 
-        # "To ensure numerical stability, we add a small regularization term"
-        cxx_reg = cxx + (1e-9 * np.eye(modes))
+        if modes % spatial_dims != 0:
+            raise ValueError(
+                f"State vector has {modes} modes, which is not divisible by "
+                f"the spatial dimension {spatial_dims}."
+            )
 
-        #transform for normalising readout
-        eigenvalues, eigenvectors = np.linalg.eigh(cxx_reg)
-        inverse_sigma = np.diagflat(1/np.sqrt(eigenvalues))
+        n_agents = modes // spatial_dims
 
-        To = eigenvectors @ inverse_sigma @ eigenvectors.T
+        # Indices for each physical dimension in the *existing* boid-major flat layout.
+        # For D=2:
+        #   dim_indices[0] -> x coords: [0, 2, 4, ...]
+        #   dim_indices[1] -> y coords: [1, 3, 5, ...]
+        dim_indices = [np.arange(d, modes, spatial_dims) for d in range(spatial_dims)]
 
-        #apply transform
-        x1o = x1 @ To
-        x2o = x2 @ To
+        def _diag_offdiag_means(block):
+            """Mean of diagonal and off-diagonal entries of an N x N block."""
+            diag_mean = np.mean(np.diag(block))
+            if n_agents == 1:
+                offdiag_mean = 0.0
+            else:
+                offdiag_mean = (block.sum() - np.trace(block)) / (n_agents * (n_agents - 1))
+            return diag_mean, offdiag_mean
 
-        #calculate cross covariance matrix
-        cxx = (x1o.T @ x2o)/simulation_steps
-        print(cxx.shape)
+        # ------------------------------------------------------------------
+        # 1) Structured Cxx:
+        #    in each dimension-dimension block, diagonal entries are equal
+        #    and off-diagonal entries are equal.
+        # ------------------------------------------------------------------
+        cxx_raw = self._covariance(x1, center=False)
 
-        #retrieve eigenvalues (where gamma squared is stated to be the same thing)
-        gamma_squared = np.linalg.eigvals(cxx)
-        consistent_capacity = np.trace(cxx)
-        assert np.allclose(consistent_capacity,np.sum(gamma_squared))
+        eye_N = np.eye(n_agents, dtype=np.float64)
+        ones_N = np.ones((n_agents, n_agents), dtype=np.float64)
 
-        return consistent_capacity,gamma_squared
-    
+        cxx_struct = np.zeros_like(cxx_raw, dtype=np.float64)
 
-    def v1(self,sv1,sv2):
-        '''
-            this version of the consistency profile calculation is attempting to implement the techniques discussed
-            in the second part of the appendix. Specifically, "use[ing] the known structure of the system to improve 
-            the efficiency of calculating its consistency profile."
-        '''
-        pass
+        # Optional small matrices corresponding to Appendix A.5
+        A = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
+        B = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
 
+        for a, rows in enumerate(dim_indices):
+            for b, cols in enumerate(dim_indices):
+                block = cxx_raw[np.ix_(rows, cols)]
 
-    def calc_consistency_profile(self,sv1,sv2, methodology:str):
-        options = [self.faithful.__name__,self.v1.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
+                diag_mean, offdiag_mean = _diag_offdiag_means(block)
 
-        if methodology not in options:
-            raise Exception(f"Available methods for KernelReadout are {options}")
-        else:
-            methodology = self.__getattribute__(methodology)
+                # block = a_ab * I_N + b_ab * 1_N
+                A[a, b] = diag_mean - offdiag_mean
+                B[a, b] = offdiag_mean
 
-        return methodology(sv1,sv2)
-    
+                cxx_struct[np.ix_(rows, cols)] = A[a, b] * eye_N + B[a, b] * ones_N
+
+        # Numerical cleanup
+        cxx_struct = 0.5 * (cxx_struct + cxx_struct.T)
+        cxx_reg = cxx_struct + regularization * np.eye(modes, dtype=np.float64)
+
+        # Whitening transform T^o from Appendix A.2 / A.3
+        evals, evecs = np.linalg.eigh(cxx_reg)
+        evals = np.clip(evals, regularization, None)
+        To = evecs @ np.diag(1.0 / np.sqrt(evals)) @ evecs.T
+
+        x1o = self._sv_transform(x1, To)
+        x2o = self._sv_transform(x2, To)
+
+        # ------------------------------------------------------------------
+        # 2) Structured Css:
+        #    after whitening, each dimension-dimension block is constant,
+        #    i.e. Css = H ⊗ 1_N in dim-major notation.
+        # ------------------------------------------------------------------
+        css_raw = self._covariance(x1o, x2o, center=False)
+
+        H = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
+
+        for a, rows in enumerate(dim_indices):
+            for b, cols in enumerate(dim_indices):
+                block = css_raw[np.ix_(rows, cols)]
+                H[a, b] = np.mean(block)
+
+        # Signal covariance should be symmetric PSD; enforce symmetry numerically
+        H = 0.5 * (H + H.T)
+
+        # By symmetry, full Css has only `spatial_dims` non-zero eigenvalues:
+        # eig(H ⊗ 1_N) = eig(H) * eig(1_N), and eig(1_N) = {N, 0, ..., 0}
+        gamma_nonzero = n_agents * np.linalg.eigvalsh(H)
+        gamma_nonzero = np.clip(np.real(gamma_nonzero), 0.0, None)
+
+        gamma_squared = np.zeros(modes, dtype=np.float64)
+        gamma_squared[:spatial_dims] = gamma_nonzero
+
+        consistent_capacity = float(gamma_nonzero.sum())
+
+        return consistent_capacity, gamma_squared
+
 
 class COMReadout(ObservationAndPrediction):
     """
@@ -1144,10 +1240,10 @@ class COMReadout(ObservationAndPrediction):
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `NaiveReadout` : Subclass which is used to perform a naive readout.
     """
-    
     def __init__(self,replica1,replica2,washout,chunk_size):
         super().__init__(replica1,replica2,washout,chunk_size)
-    
+
+
     def get_reservoir_state_vectorised(self, replica=None):
         vectorise_me = super().get_reservoir_state_vectorised(replica)
 
@@ -1163,10 +1259,8 @@ class COMReadout(ObservationAndPrediction):
                 self.tmp_paths.append(npy_path)
 
                 chunk_starts = range(0, simulation_steps, self.chunk_size)
-                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks"):
+                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
                     chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
-
-
                     chunk_data = x[chunk_start:chunk_end]
                     npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
 
@@ -1180,53 +1274,4 @@ class COMReadout(ObservationAndPrediction):
             readouts.append(pos_flattened)
 
         return readouts
-        
-    
-    def faithful(self, sv1, sv2):
-        '''
-            implements the equations outlined in the appendix A1-A4
-        '''
-        simulation_steps,modes = sv1.shape
 
-        #force them to have zero mean
-        x1 = sv1 - np.mean(sv1,axis=0)
-        x2 = sv2 - np.mean(sv2,axis=0)
-
-        assert np.allclose(np.mean(x1),np.mean(x2))
-
-        #x1 autocovariance
-        cxx = (x1.T@x1)/ simulation_steps
-
-        # "To ensure numerical stability, we add a small regularization term"
-        cxx_reg = cxx + (1e-9 * np.eye(modes))
-
-        #transform for normalising readout
-        eigenvalues, eigenvectors = np.linalg.eigh(cxx_reg)
-        inverse_sigma = np.diagflat(1/np.sqrt(eigenvalues))
-
-        To = eigenvectors @ inverse_sigma @ eigenvectors.T
-
-        #apply transform
-        x1o = x1 @ To
-        x2o = x2 @ To
-
-        #calculate cross covariance matrix
-        cxx = (x1o.T @ x2o)/simulation_steps
-        print(cxx.shape)
-
-        #retrieve eigenvalues (where gamma squared is stated to be the same thing)
-        gamma_squared = np.linalg.eigvals(cxx)
-        consistent_capacity = np.trace(cxx)
-        assert np.allclose(consistent_capacity,np.sum(gamma_squared))
-
-        return consistent_capacity,gamma_squared
-    
-    def calc_consistency_profile(self,sv1,sv2, methodology:str):
-        options = [self.faithful.__name__]#kinda weird not to just put string myself but this feels more robust against my ability to make typos
-
-        if methodology not in options:
-            raise Exception(f"Available methods for COMReadout are {options}")
-        else:
-            methodology = self.__getattribute__(methodology)
-
-        return methodology(sv1,sv2)

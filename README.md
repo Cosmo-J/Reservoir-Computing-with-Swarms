@@ -15,9 +15,9 @@ This package is designed to simulate boid agents in 2D (flat) or 3D (torus-mappe
 
 ## Package Structure
 * **`BoidSimulator`**: The core physics engine handling boid movements and force calculations.
-* **`BoidVisualizer`**: A Matplotlib-based tool for animating simulation results in real-time or from saved files.
+* **`BoidVisualiser`**: A Matplotlib-based tool for animating simulation results in real-time or from saved files.
 * **`SimParams`**: Used for creating and loading .ini file responsible for defining the simulation parameters.
-* **`SimSaverLoader`**: Handles saving simulation data to `.npz` format and retrieving previous runs.
+* **`SaverLoader`**: Handles saving simulation data to `.npz` format and retrieving previous runs.
 * **`ObservationLayer`**: Provides readout mechanisms (Kernels, Flat, COM) to transform swarm states into usable data for prediction tasks.
 
 ---
@@ -147,8 +147,8 @@ In the cases where viewing is conducted on more than one run, the runs are overl
 #### Loading Simulations
 Loading runs is of interest when wanting to perform further analysis on the results. It can be done by loading one of the included packages:
 ```python
-from src import SimSaverLoader
-datas = SimSaverLoader.load_runs(['path/to/run1.npz', 'path/to/run2.npz'])
+from src import SaverLoader
+datas = SaverLoader.load_runs(['path/to/run1.npz', 'path/to/run2.npz'])
 ```
 
 datas is a list of dictionaries corresponding to the loaded runs. See the dictionary structure below:
@@ -158,7 +158,7 @@ datas is a list of dictionaries corresponding to the loaded runs. See the dictio
 | `positions`          | `np.ndarray` | Shape `(T, N, D)`. The coordinates of all $N$ boids over $T$ timesteps in $D$ dimensions.               |
 | `velocities`         | `np.ndarray` | Shape `(T, N, D)`. The velocity vectors for all boids.                                                  |
 | `predator_positions` | `np.ndarray` | Shape `(T, D)`. The trajectory of the Lorenz predator.                                                  |
-| `time_steps`         | `int`        | The total duration of the simulation.                                                                   |
+| `simulation_steps`   | `int`        | The total duration of the simulation.                                                                   |
 | `boid_count`         | `int`        | The number of agents ($N$) in the swarm.                                                                |
 | `bounds`             | `tuple`      | The spatial boundaries/spawn area used in the simulation.                                               |
 | `config`             | `dict`       | A nested dictionary containing every parameter from the `.ini` file used to generate this specific run. |
@@ -173,7 +173,7 @@ Below shows some examples of these classes being used:
 ```python
 run_path = '/PATH_TO_RUNS'
 
-datas = SimSaverLoader.find_npzs(run_path)
+datas = SaverLoader.find_npzs(run_path)
 kr = KernelReadout(200,datas[0],datas[1],washout=1000)
 
 sv1 = kr.get_reservoir_state_vectorised(kr.replica1)

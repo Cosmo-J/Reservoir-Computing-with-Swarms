@@ -1,16 +1,5 @@
 from .BoidSimulator import BoidSimulator
-from .BoidVisualizer import BoidVisualizer
+from .BoidVisualiser import flat_render,torus_render
 from .ConfigManager import compare_params,generate_config,load_config
-from .SimSaverLoader import SimSaverLoader
-from .ObservationLayer import ObservationAndPrediction,KernelReadout,NaiveReadout,COMReadout
-
-__all__ = [ BoidSimulator,
-            BoidVisualizer,
-            compare_params,
-            generate_config,
-            load_config,
-            SimSaverLoader,
-            ObservationAndPrediction,
-            KernelReadout,
-            NaiveReadout,
-            COMReadout]
+from .SaverLoader import Saver, create_mmap, load_run, find_npzs
+from .ObservationLayer import ObservationAndPrediction, KernelReadout, NaiveReadout, COMReadout

@@ -106,13 +106,13 @@ def find_npzs(paths: list,memory_map=False):
     return datas
 
 def load_run(path: str, memory_map=False):
-
     run_dict = {}
     npz = np.load(path, allow_pickle=True)
-    run_dict["simulation_steps"]          = int(npz.get("simulation_steps"))
-    run_dict["boid_count"]          = int(npz.get("boid_count"))
-    run_dict["bounds"]              = npz.get("bounds")
-    run_dict["config"]              = npz.get("config")
+
+    run_dict["simulation_steps"] = int(npz.get("simulation_steps"))
+    run_dict["boid_count"] = int(npz.get("boid_count"))
+    run_dict["bounds"] = npz.get("bounds")
+    run_dict["config"] = npz.get("config")
 
     simulation_steps = run_dict["simulation_steps"] 
     boid_count = run_dict["boid_count"]
@@ -203,8 +203,26 @@ def create_mmap(prefix, shape, dtype='float64'):
     tmp_file = tempfile.NamedTemporaryFile(delete=False, prefix=prefix, suffix='.npy', dir=TMP_PATH)
     path = tmp_file.name
     tmp_file.close()
-    print(f"\nMade tmp file at {path}")
+    print(f"Made tmp file at {path}")
     return np.memmap(path, dtype=dtype, mode='w+', shape=shape), path
+
+def cleanup_tmps(paths):
+    failed_paths = []
+    for p in paths:
+        try:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception as e:
+                    failed_paths.append((e,p))
+        except Exception as e:
+            failed_paths.append((e,p))
+
+    print(f"Succesfully removed {len(paths)-len(failed_paths)} temporary files.")
+    if len(failed_paths)!=0:
+        print(f"Failed to remove {len(failed_paths)}. Exceptions:")
+        for e,p in failed_paths:
+            print(f"\t{e}: {p}")
 
 
 
@@ -255,3 +273,4 @@ def peterb_run(path: str):
     path : str
         _description_
     """
+
