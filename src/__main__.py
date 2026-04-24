@@ -5,8 +5,8 @@ import argparse
 import os
 import matplotlib.pyplot as plt
 
-from .SaverLoader import Saver, find_npzs
-from .BoidSimulator import BoidSimulator
+from .SaverLoader import Saver, load_npzs
+from .Simulators import BoidSimulator
 from .BoidVisualiser import flat_render,torus_render
 from .ConfigManager import load_config, generate_config, compare_params
 
@@ -14,7 +14,7 @@ from .ConfigManager import load_config, generate_config, compare_params
 parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,                 help="Run a simulation given a .ini file path of parameters.")
 parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                  help="Number of times you want the simulation to be run.")
-parser.add_argument('--seed',                   type=int,  nargs='?', default=True, const=True,    help="Whether or not the simulator uses a random seed. False uses the seed from the config file.")
+parser.add_argument('--no-seed',                type=int,  nargs='?', default=False, const=True,    help="Whether or not the simulator uses a random seed. False uses the seed from the config file, true uses a random seed.")
 parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="Give a file path to generate an empty .ini with default parameters there.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,                 help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,                help="If iterations is more than 1, use to specify the directory in which a run is saved. Otherwise it can be used to choose a specific save name")
@@ -46,7 +46,7 @@ def main(custom_args=None):
     view = args.view # view some number of previous runs (.nz) 
     run = args.run # do a run returning the result
     iterations = args.iterations # Called replicas because they have different start conditions
-    seed = args.seed
+    no_seed = args.no_seed
     save_path = args.save # save a run (given run or runview)
     chunking = args.chunk
     
@@ -61,24 +61,25 @@ def main(custom_args=None):
         
 
     # Checks
-    print(f"run: {run}\niterations {iterations}\nseed: {seed}\nsave: {save_path}\nchunking: {chunking}")
+    print(f"run: {run}\niterations {iterations}\nseed: {no_seed}\nsave: {save_path}\nchunking: {chunking}")
     if not we_be_saving and run: 
         input('\n--------- WARNING ---------\nNo save path specified so the run will not be saved (dry run) abort CTRL-C or any key to continue with dry run')
 
 
     #(1)
     if view and not run:
-        datas = find_npzs(view)
+        datas = load_npzs(view)
         same,difference_str = compare_params(datas,["coord_system","sim_width"])
         if not same:
             raise Exception(f"The simulations loaded do not have the same coordinate_system or simulation_width. See parameter comparison table below:{difference_str}")
         
         replicas = BoidSimulator.construct_view_dict(datas)
-
-        if datas[0]["coord_system"] == 'flat':
+        local_config = datas[0].get("config").item()
+        
+        if local_config["coord_system"] == 'flat':
             animation = flat_render(replicas,overlay=True,animate=True)
         else:
-            sw = datas[0]["sim_width"]
+            sw = local_config["SIM_WIDTH"]
             animation = torus_render(replicas,sim_width=sw,overlay=True,animate=True)
 
         plt.show()
@@ -92,7 +93,7 @@ def main(custom_args=None):
             saver = Saver(save_path)
 
         # setting the seed
-        Simulator = BoidSimulator(simulation_parameters,seed,memory_mapping=we_be_memmap,chunk_size=chunking)
+        Simulator = BoidSimulator(simulation_parameters,use_random_seed=no_seed,memory_mapping=we_be_memmap,chunk_size=chunking)
 
         datas=[]
         for i in trange(iterations,desc='Iterations',position=0):

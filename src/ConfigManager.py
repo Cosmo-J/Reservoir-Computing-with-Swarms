@@ -165,6 +165,8 @@ def compare_params(params:list, to_check=None):
     str
         Table comparing their differences, can be appended to any string and or printed out for debugging purposes.
     """
+    if len(params) == 1:
+        return True,"One data provided, no comparison."
     if isinstance(to_check, str): 
         to_check = [to_check]
     elif to_check is None:

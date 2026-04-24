@@ -31,7 +31,7 @@ class ObservationAndPrediction(ABC):
         Parameters
         ----------
         replica1 : dict
-            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SaverLoader`.
+            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `Simulator`, `SaverLoader`.
         replica2 : dict
             Expected to be identical to `replica1` in terms of:
 
@@ -74,14 +74,22 @@ class ObservationAndPrediction(ABC):
         self.replica1 = replica1.copy()
         self.replica2 = replica2.copy()
 
-        #validating paramaters
-        same_params, table = compare_params([self.replica1.get('config').item(),self.replica2.get('config').item()])
-        if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
+        # Initialising the config
+        config1 = self.replica1.get('config')
+        if isinstance(config1,np.ndarray):
+            config1 = config1.item()
 
+        config2 = self.replica2.get('config')
+        if isinstance(config2,np.ndarray):
+            config2 = config2.item()
+        
+        same_params, table = compare_params([config1,config2])
+        if same_params==False: raise ValueError("Replica1 and Replica2 have different parameters so are likely not replicas!:\n"+table)
         if not np.allclose(self.replica1.get('predator_positions'), self.replica2.get('predator_positions')): raise ValueError("Replicas have different predator positions")
+        self.config = config1 #assertion above ensures that this config speaks for both replicas
         
-        self.config = self.replica1.get('config').item() #assertion above ensures that this config speaks for both replicas
-        
+
+        # Initialising washout
         if washout > self.config['simulation_steps']: raise ValueError("Washout greater or equal to number of time steps.")
         if washout > self.config['simulation_steps']/2: print(f"WARNING: Washout accounts for {int(washout/self.config['simulation_steps'])}% of total time steps.")
         
@@ -164,19 +172,24 @@ class ObservationAndPrediction(ABC):
         self.replica2 = wash(self.replica2)
 
     
-    def get_reservoir_state_vectorised(self,replica=None):
-        #TODO update this docstring
+    def get_reservoir_readout(self,replica=None):
         """
-        Abstract function definition. Ensures that subclasses have a way of converting their replicas into vectorised readouts.
+            This method is used to create readouts from the replicas attached to a class (or subclass) instance.
+            For each replica chosen to be readout, it calls _create_readout with the replicas, and returns a list containing the readout information in the form of a dict.
 
-        Parameters
-        ----------
-        replica : self.replica#
-            Class instance expects to be passed one of its own attibutes, either replica1 or replica2.
+            Parameters
+            ----------
+            replica : self.replica
+                Default is None, in which case both class replicas are turned into a readout.
+                Can be passed optionally either replica1 or replica2, to only find the readout for the one given.
 
-        Returns
-        ------
-        Intended to return some `np.ndarray` of shape (N,F) N simulation_steps/samples F features, for compatability with other methods in the class.
+            Returns
+            ------
+                Returns a list of dictionaries, where each dict contains information about a given readout.
+
+            Raises
+            ------
+            ValueError: If the replica passed is not self.replica1 or self.replica2 (from the class instances point of view).
         """        
         if not replica is None:
             if not (replica is self.replica1 or replica is self.replica2):
@@ -186,7 +199,23 @@ class ObservationAndPrediction(ABC):
         else:
             vectorise_me = [self.replica1,self.replica2]
 
-        return vectorise_me
+        readouts_list = []
+        for r in vectorise_me:
+            readout = self._create_readout(r)
+        
+            readout_dict = {
+                "readout":readout,
+                "readout_shape":readout.shape,
+                "readout_method":self.__class__.__name__,
+                "simulation_config":self.config,
+            }
+            readouts_list.append(readout_dict)
+        return readouts_list
+
+    @abstractmethod
+    def _create_readout(self,replica=None):
+        #TODO docstring
+        pass
 
 
     def calc_consistency_profile(self,sv1,sv2,methodology):
@@ -198,7 +227,7 @@ class ObservationAndPrediction(ABC):
             Parameters
             ----------
             sv1 : np.ndarray, shape(N,F)
-                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
+                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_readout()`. 
                 Numpy array with shape N simulation_steps/samples and F features/modes.
             sv2 : np.ndarray, shape(N,F)
                 Same as sv1 except for replica2.
@@ -272,18 +301,21 @@ class ObservationAndPrediction(ABC):
         else:
             return np.mean(sv,axis)
 
-    def _std(self,sv,axis=0):
+    def _std(self,sv,axis=0,sv_mean=None):
         if self.memory_map:
             simulation_steps,features = sv.shape
-            total_sum = np.zeros(features, dtype='float64')
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Std',leave=True,position=1):
-                chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
-                sv_chunk = sv[chunk_start:chunk_end]**2
-                chunk_sum = np.sum(sv_chunk,axis)
-                total_sum += chunk_sum
+            if sv_mean is None:
+                sv_mean = self._mean(sv)
 
-            return total_sum / simulation_steps
+            total_sq_diff = np.zeros(features, dtype='float64')
+            for chunk_start in trange(0, simulation_steps, self.chunk_size, desc='Chunked Standard Deviation',leave=True,position=1):
+                chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
+                chunk_diff = (sv[chunk_start:chunk_end] - sv_mean) ** 2
+                total_sq_diff += np.sum(chunk_diff, axis=axis)
+
+            variance = total_sq_diff / simulation_steps
+            return np.sqrt(variance)
         else:
             return np.std(sv,axis)  
 
@@ -422,16 +454,20 @@ class ObservationAndPrediction(ABC):
 
             - Assumes that F isn't super large and so the returned np.ndarray can live in memory.
         """      
-
+        tmp_paths = []
         if sv2 is None:
             sv2 = sv1
             if center:
-                sv1_mean = self._mean(sv1,0)
+                sv1_mean,tmp1 = self._mean(sv1,0)
                 sv2_mean = sv1_mean
+                tmp_paths.extend(tmp1)
         else:
             if center:
-                sv1_mean = self._mean(sv1,0)
-                sv2_mean = self._mean(sv2,0)
+                sv1_mean,tmp1 = self._mean(sv1,0)
+                sv2_mean,tmp2 = self._mean(sv2,0)
+                tmp_paths.extend(tmp1)
+                tmp_paths.extend(tmp2)
+
         if not center:
             sv1_mean = np.zeros(sv1.shape[1],dtype='float64')
             sv2_mean = np.zeros(sv2.shape[1],dtype='float64')
@@ -445,19 +481,19 @@ class ObservationAndPrediction(ABC):
 
             for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance",leave=True,position=1):
                 chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
-
                 sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
                 sv2_chunk_centered = sv2[chunk_start:chunk_end] - sv2_mean
-
                 covariances += (sv1_chunk_centered.T @ sv2_chunk_centered)
 
-            return covariances / (simulation_steps-1)
+            cov = covariances / (simulation_steps-1)
         else:
             sv1_centered = sv1-sv1_mean
             sv2_centered = sv2-sv2_mean
-            
             simulation_steps = sv1_centered.shape[0]
-            return (sv1_centered.T @ sv2_centered) / (simulation_steps-1)
+            cov = (sv1_centered.T @ sv2_centered)/ (simulation_steps-1)
+
+        return cov,tmp_paths
+
 
 
     # Profiling methods
@@ -567,10 +603,22 @@ class ObservationAndPrediction(ABC):
 
             cleanup_tmps(temp_file_paths)
 
-            return prediction, corr_coef, best_alpha
+            return {
+                "readout_method": self.__class__.__name__,
+                "prediction_distance":prediction_distance,
+                "train_size":train_size,
+                "alpha_search": ridge_alpha,
+                "simulation_config": None,
+                "prediction": prediction,
+                "alpha": best_alpha,
+                "corr_coef": corr_coef,
+            }
 
 
     def v1(self,sv1,sv2):
+        """
+            like faithful except the Css is averaged against its transpose as to ensure a symetric matrix is eigendecomposed at the end.
+        """
         temp_file_paths = []
 
         sv1,tmp1 = self._center(sv1)
@@ -593,7 +641,9 @@ class ObservationAndPrediction(ABC):
         """
 
         #calculating auto-covariance
-        cxx = self._covariance(sv1, center=False)
+        cxx,tmp1 = self._covariance(sv1, center=False)
+        temp_file_paths.extend(tmp1)
+
 
         # "To ensure numerical stability, we add a small regularization term" - lymburn et al
         cxx_reg = cxx + 1e-10 * np.eye(cxx.shape[0],dtype=np.float64)
@@ -620,7 +670,8 @@ class ObservationAndPrediction(ABC):
         #assert np.allclose(np.eye(sv1o.shape[1]),I,atol=1e-1), "Normalisation transform did not produce a autocovariance which makes an identity matrix"
 
         #cross-covariance
-        css = self._covariance(sv1o,sv2o,center=False)
+        css,tmp = self._covariance(sv1o,sv2o,center=False)
+        temp_file_paths.extend(tmp)
 
         '''
         "While this is only true in the limit of infinite trajectories, we can enforce the structure by averaging on the diagonal and off-diagonal elements and thus better approximate the asymptotic behavior."
@@ -640,6 +691,72 @@ class ObservationAndPrediction(ABC):
         cleanup_tmps(temp_file_paths)
         return consistent_capacity,gamma2
 
+    
+    def v2(self,sv1,sv2):
+        """
+            like v1 except seperate transforms are calculated for each state vector
+        """
+        temp_file_paths = []
+
+        sv1,tmp1 = self._center(sv1)
+        sv2,tmp2= self._center(sv2)
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        transforms = []
+        for sv in [sv1,sv2]:
+            #calculating auto-covariance
+            cxx,tmp1 = self._covariance(sv, center=False)
+            temp_file_paths.extend(tmp1)
+
+
+            cxx_reg = cxx + 1e-9 * np.eye(cxx.shape[0],dtype=np.float64)
+
+            Sigma, Q = np.linalg.eigh(cxx_reg) # eigendecompoise the autocovariance
+            #assert np.linalg.cond(cxx_reg) < 1e16, f"{np.linalg.cond(cxx_reg)} - condition of matrix exceeds floating point limit 1e16 so data loss will be incurred by any transformation" 
+
+
+            eig_inv_sqrt = 1/np.sqrt(Sigma)
+            Sigma_inv = np.diagflat(eig_inv_sqrt)
+
+            transformation = Q @ Sigma_inv @ Q.T
+            transforms.append(transformation)
+
+        sv1o,tmp1 = self._sv_transform(sv1, transforms[0])
+        sv2o,tmp2 = self._sv_transform(sv2, transforms[1])
+
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        # The covariance of the whitened data MUST be the Identity matrix
+        #I = (sv1o.T @ sv1o) / sv1o.shape[0]
+        #assert np.allclose(np.eye(sv1o.shape[1]),I,atol=1e-1), "Normalisation transform did not produce a autocovariance which makes an identity matrix"
+
+        #cross-covariance
+        css,tmp = self._covariance(sv1o,sv2o,center=False)
+        temp_file_paths.extend(tmp)
+
+        '''
+        "While this is only true in the limit of infinite trajectories, we can enforce the structure by averaging on the diagonal and off-diagonal elements and thus better approximate the asymptotic behavior."
+        
+            whilst in the context of the paper this doesn't seem to be in relation to the observation kernels, it is also true that two 
+            kernel replicas aren't t->inf so produce an asymetric matrix and so an eigendecomposition doesn't work
+        '''
+        css_symm = (css + css.T) / 2
+
+        # eigendecompoise the autocovariance
+        gamma2 = np.linalg.eigvalsh(css_symm)
+        
+
+        consistent_capacity = np.trace(css_symm) # or could sum gamma2
+
+
+        cleanup_tmps(temp_file_paths)
+        return consistent_capacity,gamma2
+
+
+
 
     def faithful(self,sv1,sv2):
         """
@@ -649,7 +766,7 @@ class ObservationAndPrediction(ABC):
             Parameters
             ----------
             sv1 : np.ndarray, shape(N,F)
-                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_state_vectorised()`. 
+                Vectorised reservoir state of replica1. Assumed to have been generated using `get_reservoir_readout()`. 
                 Numpy array with shape N simulation_steps/samples and F features/modes.
             sv2 : np.ndarray, shape(N,F)
                 Same as sv1 except for replica2.
@@ -685,7 +802,8 @@ class ObservationAndPrediction(ABC):
         
         # "First, the covariance matrix is calculated as [Cxx]ij =〈xi(t) xj(t)"
             #center seperatly here for optimisation reasons
-        Cxx = self._covariance(sv1,center=True)
+        Cxx,tmp1 = self._covariance(sv1,center=True)
+        temp_file_paths.extend(tmp1)
 
         # "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
         Cxx_reg = Cxx + 1e-9 * np.eye(len(Cxx))
@@ -720,8 +838,8 @@ class ObservationAndPrediction(ABC):
         temp_file_paths.extend(tmp2)
         
         # "cross-covariance matrix of the two replicas [Css]ij = 〈s◦,i(t)s◦,j(t)〉 = 〈x◦,i(t)x'◦,j(t)〉."
-        Css = self._covariance(X1o,X2o,center=False)
-
+        Css,tmp1 = self._covariance(X1o,X2o,center=False)
+        temp_file_paths.extend(tmp1)
 
         # "The eigendecomposition of this positive semi-definite matrix reads Css = Qss Σ²ss Qᵀss>. 
         # The diagonal entries of 62 ss are the consistency correlations γ 2 k ."
@@ -739,6 +857,47 @@ class ObservationAndPrediction(ABC):
         cleanup_tmps(temp_file_paths)
         return consistent_capacity,gamma_squared
 
+
+    def gamma2_lymburn_2021(self, sv1, sv2, lam=1e-9):
+        temp_file_paths = []
+        x1, tmp1 = self._center(sv1)
+        x2, tmp2 = self._center(sv2)
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        # Appendix A.1-A.3
+        C1,tmp1 = self._covariance(x1, center=False)
+        C2,tmp2 = self._covariance(x2, center=False)
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        Cxx = 0.5 * (C1 + C2)
+        Cxx = Cxx + lam * np.eye(Cxx.shape[0], dtype=np.float64)
+
+        # Whitening / sphering transform
+        evals, Q = np.linalg.eigh(Cxx)
+        evals = np.clip(evals, lam, None)
+        T0 = Q @ np.diag(1.0 / np.sqrt(evals)) @ Q.T
+
+        x1o, tmp1 = self._sv_transform(x1, T0)
+        x2o, tmp2 = self._sv_transform(x2, T0)
+        temp_file_paths.extend(tmp1)
+        temp_file_paths.extend(tmp2)
+
+        # Appendix A.6-A.7
+        Css, tmp1 = self._covariance(x1o, x2o, center=False)
+        Css = 0.5 * (Css + Css.T)
+        temp_file_paths.extend(tmp1)
+
+        # Appendix A.8: use SVD, not raw eigenvalues of a non-symmetric matrix
+        U, s, Vt = np.linalg.svd(Css, full_matrices=False)
+        gamma2 = s
+
+        # Appendix A.9
+        theta = np.trace(Css)
+
+        cleanup_tmps(temp_file_paths)
+        return theta, gamma2
 
     # Plotting methods
     def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False):
@@ -845,15 +1004,19 @@ class ObservationAndPrediction(ABC):
         
         fig, ax = plt.subplots(dpi=dpi)
         
-        ax.plot(gamma2_k_ranked[:truncated_to])
-        ax.set_ylabel(r'$\gamma^{2}_{k}$',rotation=0,labelpad=20,fontsize=20)
+        ax.plot(gamma2_k_ranked[:truncated_to+1],)
 
-        ax.set_xlabel(r'$k$')
-        ax.set_xlim(left=0)
+        ax.set_xlim(0,truncated_to)
         ax.set_ybound([0,1])
 
-        ax.set_xticks([0,truncated_to/2,truncated_to])
+        ax.set_xticks([0,truncated_to//2,truncated_to])
         ax.set_yticks([0,0.5,1])
+        ax.tick_params(axis='both', which='major', direction='in', length=6, top=True, right=True)
+
+        ax.set_xlabel(r'$k$')
+        ax.set_ylabel(r'$\gamma^{2}_{k}$',rotation=0,labelpad=20,fontsize=20)
+
+
         ax.set_box_aspect(1)
         fig.tight_layout()
 
@@ -884,7 +1047,7 @@ class KernelReadout(ObservationAndPrediction):
             The number of observation kernels that should be generated for the simulation.
 
         replica1 : dict
-            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `BoidSimulator`, `SaverLoader`.
+            Data dictionary for a pre-simulated replica. Assumed to have been created using other parts of the package such as `Simulator`, `SaverLoader`.
         replica2 : dict
             Expected to be identical to `replica1` in terms of:
 
@@ -919,7 +1082,7 @@ class KernelReadout(ObservationAndPrediction):
             replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
             driving signal, as this attribute is also used in calculations involving replica2.
     """
-    def __init__(self,replica1,replica2,kernel_number,washout,chunk_size):
+    def __init__(self,replica1,replica2,kernel_number,washout,chunk_size,cleanup_tmps=True):
         super().__init__(replica1,replica2,washout,chunk_size)
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
@@ -970,7 +1133,7 @@ class KernelReadout(ObservationAndPrediction):
         return np.array(centers),np.array(widths)
     
 
-    def get_reservoir_state_vectorised(self, replica=None):
+    def _create_readout(self, replica):
         """
             This is implements the kernel observation layer described in Lymburn et al (2021).
 
@@ -994,72 +1157,65 @@ class KernelReadout(ObservationAndPrediction):
             np.ndarray or np.memmap
             matrix of shape (N,F) where N is the number of time steps and F is the number of features, but specifically in this case F = kernel_number*3.
         """
-        vectorise_me = super().get_reservoir_state_vectorised(replica)
+        positions = replica['positions']
+        velocities = replica['velocities']
         
-        readouts = []
-        for replica in vectorise_me:
-            positions = replica['positions']
-            velocities = replica['velocities']
-            
-            simulation_steps = positions.shape[0]
-            kernels = self.kernel_number
-            features = kernels*3 #x3 because 3 readouts occur as specified in the paper
+        simulation_steps = positions.shape[0]
+        kernels = self.kernel_number
+        features = kernels*3 #x3 because 3 readouts occur as specified in the paper
 
-            centers = self.centers
-            widths = self.widths
-            c_sq = np.sum(centers**2, axis=1)
-            
-            if self.memory_map:
-                npy, npy_path = create_mmap('kernel_readout_',(simulation_steps,features))
-                self.tmp_paths.append(npy_path)
-            
-            chunk_starts = list(range(0, simulation_steps, self.chunk_size))
+        centers = self.centers
+        widths = self.widths
+        c_sq = np.sum(centers**2, axis=1)
+        
+        if self.memory_map:
+            npy, npy_path = create_mmap('kernel_readout_',(simulation_steps,features))
+            self.tmp_paths.append(npy_path)
+        
+        chunk_starts = list(range(0, simulation_steps, self.chunk_size))
 
-            r1_t = []
-            r2_t = []
-            r3_t = []
-            for start in tqdm(chunk_starts, desc="Serial Chunks",leave=True,position=1):
-                chunk_end = min(start + self.chunk_size, simulation_steps)
+        r1_t = []
+        r2_t = []
+        r3_t = []
+        for start in tqdm(chunk_starts, desc="Serial Chunks",leave=True,position=1):
+            chunk_end = min(start + self.chunk_size, simulation_steps)
 
-                #of this chunk
-                pos_c = positions[start:chunk_end]
-                velx_c = velocities[start:chunk_end,:,0,None]
-                vely_c = velocities[start:chunk_end,:,1,None]
+            #of this chunk
+            pos_c = positions[start:chunk_end]
+            velx_c = velocities[start:chunk_end,:,0,None]
+            vely_c = velocities[start:chunk_end,:,1,None]
 
-                pos_sq = np.sum(pos_c**2, axis=2, keepdims=True)
+            pos_sq = np.sum(pos_c**2, axis=2, keepdims=True)
+            cross = np.dot(pos_c, centers.T)
 
-                cross = np.dot(pos_c, centers.T)
+            #(x-c_m)^2 expand the brackets vvvvv :D
+            e_numer = pos_sq + c_sq[None, None, :] - 2.0 * cross
+            e_denom = 2 * widths[None, None, :]
 
-                #(x-c_m)^2 expand the brackets vvvvv :D
-                e_numer = pos_sq + c_sq[None, None, :] - 2.0 * cross
-                e_denom = 2 * widths[None, None, :]
+            psi = np.exp(-e_numer / e_denom)
 
-                psi = np.exp(-e_numer / e_denom)
-
-                r1 = np.sum(psi, axis=1)
-                r2 = np.sum(psi * velx_c, axis=1)
-                r3 = np.sum(psi * vely_c, axis=1)
-
-                if self.memory_map:
-                    #since features are a vector, below indexs the vector ranges 0-199 is r1 readout, 200-399 is r2, 400-600 is r3
-                    npy[start:chunk_end,0:kernels] = r1
-                    npy[start:chunk_end,kernels:kernels*2] = r2
-                    npy[start:chunk_end,kernels*2:kernels*3] = r3
-                else:
-                    r1_t.append(r1)
-                    r2_t.append(r2)
-                    r3_t.append(r3)
+            r1 = np.sum(psi, axis=1)
+            r2 = np.sum(psi * velx_c, axis=1)
+            r3 = np.sum(psi * vely_c, axis=1)
 
             if self.memory_map:
-                npy.flush()
-                readouts.append(npy)
+                #since features are a vector, below indexs the vector ranges 0-199 is r1 readout, 200-399 is r2, 400-600 is r3
+                npy[start:chunk_end,0:kernels] = r1
+                npy[start:chunk_end,kernels:kernels*2] = r2
+                npy[start:chunk_end,kernels*2:kernels*3] = r3
             else:
-                r1_t = np.vstack(r1_t)
-                r2_t = np.vstack(r2_t)
-                r3_t = np.vstack(r3_t)
-                readouts.append(np.concatenate([r1_t, r2_t, r3_t], axis=1))
+                r1_t.append(r1)
+                r2_t.append(r2)
+                r3_t.append(r3)
 
-        return readouts
+        if self.memory_map:
+            npy.flush()
+            return npy
+        else:
+            r1_t = np.vstack(r1_t)
+            r2_t = np.vstack(r2_t)
+            r3_t = np.vstack(r3_t)
+            return np.concatenate([r1_t, r2_t, r3_t], axis=1)
 
 
 class NaiveReadout(ObservationAndPrediction):
@@ -1077,37 +1233,32 @@ class NaiveReadout(ObservationAndPrediction):
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `COMReadout` : Subclass which is used to perform a center of mass readout.
     """
-    def __init__(self,replica1,replica2,washout,chunk_size):
+    def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
         super().__init__(replica1,replica2,washout,chunk_size)
     
 
-    def get_reservoir_state_vectorised(self,replica=None):
-        vectorise_me = super().get_reservoir_state_vectorised(replica)
+    def _create_readout(self,replica):
+        x = replica['positions']
 
-        readouts=[]
-        for replica in vectorise_me:
-            x = replica['positions']
+        simulation_steps,num_boids,_ = x.shape
+        features = num_boids*2 #x and y positions
 
-            simulation_steps,num_boids,_ = x.shape
-            features = num_boids*2 #x and y positions
+        if self.memory_map:
+            npy, npy_path = create_mmap('flat_readout_',(simulation_steps,features))
+            self.tmp_paths.append(npy_path)
 
-            if self.memory_map:
-                npy, npy_path = create_mmap('flat_readout_',(simulation_steps,features))
-                self.tmp_paths.append(npy_path)
+            chunk_starts = range(0, simulation_steps, self.chunk_size)
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+                chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
+                chunk_data = x[chunk_start:chunk_end]
+                npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
 
-                chunk_starts = range(0, simulation_steps, self.chunk_size)
-                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
-                    chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
-                    chunk_data = x[chunk_start:chunk_end]
-                    npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
+            npy.flush()
+            return npy
+        else:
+            pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
+            return pos_flattened
 
-                npy.flush()
-                readouts.append(npy)
-            else:
-                pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
-                readouts.append(pos_flattened)
-        return readouts
-    
 
     def appendix_2(self, sv1, sv2, regularization=1e-9):
         """
@@ -1240,38 +1391,67 @@ class COMReadout(ObservationAndPrediction):
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `NaiveReadout` : Subclass which is used to perform a naive readout.
     """
-    def __init__(self,replica1,replica2,washout,chunk_size):
+    def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
         super().__init__(replica1,replica2,washout,chunk_size)
 
 
-    def get_reservoir_state_vectorised(self, replica=None):
-        vectorise_me = super().get_reservoir_state_vectorised(replica)
+    def _create_readout(self, replica):
+        x = replica['positions']
+        simulation_steps,_,_ = x.shape
+        features = 2 #x,y center of mass
 
-        readouts=[]
-        for replica in vectorise_me:
-            x = replica['positions']
+        if self.memory_map:
+            npy, npy_path = create_mmap('com_readout_',(simulation_steps,features))
+            self.tmp_paths.append(npy_path)
 
-            simulation_steps,_,_ = x.shape
-            features = 2 #x,y center of mass
+            chunk_starts = range(0, simulation_steps, self.chunk_size)
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+                chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
+                chunk_data = x[chunk_start:chunk_end]
+                #Chunked mean not used because boid dimension isn't typically that large so it's a mean of 200 numbers in most of my cases
+                npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
 
-            if self.memory_map:
-                npy, npy_path = create_mmap('com_readout_',(simulation_steps,features))
-                self.tmp_paths.append(npy_path)
-
-                chunk_starts = range(0, simulation_steps, self.chunk_size)
-                for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
-                    chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
-                    chunk_data = x[chunk_start:chunk_end]
-                    npy[chunk_start:chunk_end] = np.mean(chunk_data,axis=1)
-
-                npy.flush()
-                readouts.append(npy)
-            
+            npy.flush()
+            return npy
+        else:
+            #Chunked mean not used because boid dimension isn't typically that large so it's a mean of 200 numbers in most of my cases
             pos_flattened = np.mean(x,axis=1)
+            return pos_flattened
 
-            #pos_normalised = (pos_flattened - np.mean(pos_flattened,axis=0))/np.std(pos_flattened, axis=0)
-            #return pos_normalised
-            readouts.append(pos_flattened)
 
-        return readouts
+class FlatReadout(ObservationAndPrediction):
+    def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
+        super().__init__(replica1,replica2,washout,chunk_size)
 
+
+    def _create_readout(self, replica):
+
+        x = replica['positions']
+        v = replica['velocities']
+
+        simulation_steps,boids,x_modes = x.shape
+        _,_,v_modes = v.shape
+
+        features = (boids*x_modes) + (boids*v_modes)
+
+        if self.memory_map:
+            npy, npy_path = create_mmap('flat_readout_',(simulation_steps,features))
+            self.tmp_paths.append(npy_path)
+
+            chunk_starts = range(0, simulation_steps, self.chunk_size)
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+                chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
+                chunk_data_x = x[chunk_start:chunk_end]
+                chunk_data_v = x[chunk_start:chunk_end]
+
+                x_flatten = chunk_data_x.reshape(chunk_data_x.shape[0],chunk_data_x.shape[1]*chunk_data_x.shape[2])
+                v_flatten = chunk_data_v.reshape(chunk_data_v.shape[0],chunk_data_v.shape[1]*chunk_data_v.shape[2])
+
+                npy[chunk_start:chunk_end] = np.concatenate([x_flatten, v_flatten],axis=1)
+
+            npy.flush()
+            return npy
+        else:
+                x_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
+                v_flattened = v.reshape(v.shape[0],v.shape[1]*v.shape[2]) # flattens the x and y positions into a single vector
+                return np.concatenate([x_flattened, v_flattened],axis=1)
