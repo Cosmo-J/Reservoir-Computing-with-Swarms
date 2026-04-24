@@ -7,7 +7,7 @@ from .SaverLoader import create_mmap
 EPS =1e-12 # used for avoiding divide by 0
 
 class BoidSimulator:
-    def __init__(self,parameters,use_seed,memory_mapping=False,chunk_size=1000):
+    def __init__(self,parameters,use_random_seed,memory_mapping=False,chunk_size=1000):
         if len(parameters) <=0:
             raise ValueError(".ini provided is empty.")
         self.p = parameters
@@ -15,9 +15,10 @@ class BoidSimulator:
         # Exception to the rule that the parameters shouldn't be attributes, just because keeping the following as an attribute improves readbility so much
         self.torus = parameters['coord_system'] == 'torus'
 
+        self.lorenz_system = LorenzSimulator(self.p['l_sigma'],self.p['l_rho'],self.p['l_beta'])
         # Randomness related params
-        self.set_seed(random=use_seed)
-        self.using_seed = use_seed
+        self.set_seed(random=use_random_seed)
+        self.using_seed = use_random_seed
 
         # Chunking related params
         self.chunk_size = chunk_size
@@ -105,7 +106,7 @@ class BoidSimulator:
         
         # this 'if else' is the heaviside function
         if(dist_norm<=self.p['rad_predator']):
-            denom = dist_norm**2
+            denom = dist_norm
             numer = dist
             return (numer/denom+EPS)
         else:
@@ -133,7 +134,7 @@ class BoidSimulator:
             tree = KDTree(tree_points)
 
         elif self.p['coord_system'] == 'torus':
-            tree_points = self.__lorenz_wrap(boid_xs)
+            tree_points = self.__torus_wrap(boid_xs)
             tree = KDTree(tree_points, boxsize=self.p['sim_width'])
             
         align_lists = tree.query_ball_point(tree_points,r=self.p['rad_alignment'])
@@ -155,29 +156,6 @@ class BoidSimulator:
 
         return forces
 
-    def __lorenz_equations(self,t,start_states):
-        x,y,z = start_states
-        dxBYdt = self.p['l_sigma'] * (y-x)
-        dyBYdt = x * (self.p['l_rho'] - z) - y
-        dzBYdt = (x * y) - (self.p['l_beta'] * z)
-        return dxBYdt,dyBYdt,dzBYdt
-
-    def generate_lorenz(self,simulation_steps, sample_rate, x_init, y_init, z_init,norm_std=2):
-        # Lambda for rescaling the output to have std of 2 and mean 0 (as specified in Lymburn et al)
-        rescale = lambda axis: norm_std * (axis - np.mean(axis)) / np.std(axis)
-
-        t = np.arange(simulation_steps, dtype=float) * sample_rate
-
-        soln = solve_ivp(self.__lorenz_equations, t_span=(t[0],t[-1]) ,y0=(x_init,y_init,z_init) ,dense_output=True)
-        coords = soln.sol(t).T
-
-        rescaled_x_coords = rescale(coords[:, 0])
-        rescaled_y_coords = rescale(coords[:, 1])
-        
-        lorenz_series = np.column_stack((rescaled_x_coords,rescaled_y_coords))
-
-        return lorenz_series
-
     def generate_flock(self,flock_size,spawn_bounds,random_velocity=False,random_position=False):
         #the reason for it being done as follows below is to protect against cases where the tuple orders the min and max lim differently
         spawn_min = min(spawn_bounds)
@@ -198,7 +176,7 @@ class BoidSimulator:
         # returns positions, velocities, neighbour data
         return x, v
 
-    def __lorenz_wrap(self,positions):
+    def __torus_wrap(self,positions):
         '''
             assumes to take same positions in shape (n,2) (where n is the number of things with a position)
         '''
@@ -238,17 +216,15 @@ class BoidSimulator:
 
         self.spawn_bounds = (self.p['spawn_min'],self.p['spawn_max'])
 
-        lorenz = self.generate_lorenz(simulation_steps, self.p['l_sampling_rate'], self.p['x_lorenz'], self.p['y_lorenz'], self.p['z_lorenz'])
+        lorenz = self.lorenz_system.generate_lorenz(simulation_steps, self.p['l_sampling_rate'], self.p['x_lorenz'], self.p['y_lorenz'], self.p['z_lorenz'])
         p, v = self.generate_flock(boid_count, self.spawn_bounds, self.p['random_velocity'], self.p['random_position'])
 
         if self.torus:
-            p = self.__lorenz_wrap(p) # wrap each boid pos over 200 boids
-
+            p = self.__torus_wrap(p) # wrap each boid pos over 200 boids
             #1. Center lorenz around a center where 
             lorenz = lorenz+self.p['sim_width']/2
             #2. Wrap the recentered lorenz
-            lorenz = self.__lorenz_wrap(lorenz)# wrap each coordinate over 1000 steps
-        
+            lorenz = self.__torus_wrap(lorenz)# wrap each coordinate over all time steps
         positions[0] = p
         velocities[0] = v
 
@@ -260,7 +236,7 @@ class BoidSimulator:
             new_v, new_x = self.__physics_step(current_pos, current_vel, lorenz[t])
 
             if self.p['coord_system'] == 'torus':
-                new_x = self.__lorenz_wrap(new_x)
+                new_x = self.__torus_wrap(new_x)
 
             positions[t + 1] = new_x
             velocities[t + 1] = new_v
@@ -297,3 +273,35 @@ class BoidSimulator:
             replica_dict = {'positions':pos,'velocities':vel,'input_signal':signal}
             replicas_for_visualiser.append(replica_dict)
         return replicas_for_visualiser
+
+
+class LorenzSimulator:
+    def __init__(self,sigma,rho,beta):
+        self.sigma = sigma
+        self.rho = rho
+        self.beta = beta
+
+    def lorenz_equations(self,t,start_states):
+        x,y,z = start_states
+        dxBYdt = self.sigma * (y-x)
+        dyBYdt = x * (self.rho - z) - y
+        dzBYdt = (x * y) - (self.beta * z)
+        return dxBYdt,dyBYdt,dzBYdt
+
+    def generate_lorenz(self,simulation_steps, sample_rate, x_init, y_init, z_init,norm_std=2):
+        t = np.arange(simulation_steps, dtype=float) * sample_rate
+
+        soln = solve_ivp(self.lorenz_equations, t_span=(t[0],t[-1]) ,y0=(x_init,y_init,z_init) ,dense_output=True)
+        coords = soln.sol(t).T
+
+        if norm_std is None:#dont rescale in this case
+            x_coords = coords[:, 0]
+            y_coords = coords[:, 1]
+        else:
+            # Lambda for rescaling the output to have std of 2 and mean 0 (as specified in Lymburn et al)
+            rescale = lambda axis: norm_std * (axis - np.mean(axis)) / np.std(axis)
+            x_coords = rescale(coords[:, 0])
+            y_coords = rescale(coords[:, 1])
+
+        lorenz_series = np.column_stack((x_coords,y_coords))
+        return lorenz_series
