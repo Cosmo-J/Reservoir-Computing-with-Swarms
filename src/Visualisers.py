@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FuncAnimation
-from matplotlib.ticker import LinearLocator
 
 SIM_STYLE = {
     "boid_size": 10,
@@ -395,6 +394,7 @@ def to_torus_3d(positions, sim_width, major_radius=10, minor_radius=4):
     return x, y, z
 
 
+
 RIDGE_STYLE = {
     "dpi": 100,
     "plot_ratio": (2, 1),
@@ -418,10 +418,7 @@ RIDGE_STYLE = {
     "predictions_labels":None,
     "predictions_colors":None,
     "predictions_linewidths":2.5,
-    
-
 }
-
 
 def plot_ridge_predictions(predictions, signal, **kwargs):
     style = {**RIDGE_STYLE, **kwargs}
@@ -530,5 +527,92 @@ def plot_ridge_predictions(predictions, signal, **kwargs):
     ax.yaxis.label.set_fontsize(style["font_size"])
 
     ax.tick_params(axis='both', which='major',labelsize=style["font_size"],direction='in',pad=15,width=style["axes_linewidth"],size=style["font_size"]/3,top=True)
+
+    return ax
+
+
+C_PROF_STYLE = {
+    "dpi": 200,
+    "plot_ratio": (1, 1),
+    "fig_width": 8,
+    "grid": False,
+    "font_size": 18,
+    "x_ticks": None,
+    "y_ticks": [0, 0.5, 1],
+    "axes_linewidth": 1,
+    "truncated_to": 100,
+    "cc_dp": 1,
+    "show_consistent_capacity": True,
+    "gamma2_colors": None,
+    "gamma2_linestyles": "solid",
+    "gamma2_linewidths": 2,
+    "capacity_labels": None,
+}
+
+def plot_consistency_profile(consistent_capacity, consistency_profile, **kwargs):
+    style = {**C_PROF_STYLE, **kwargs}
+
+    plt.rcParams.update({"font.size": style["font_size"], "axes.linewidth": style["axes_linewidth"]})
+
+    if not isinstance(consistency_profile, list):
+        consistency_profile = [consistency_profile]
+
+    if not isinstance(consistent_capacity, list):
+        consistent_capacity = [consistent_capacity]
+
+    num_profiles = len(consistency_profile)
+
+    if len(consistent_capacity) != num_profiles:
+        raise ValueError("consistent_capacity must have the same number of values as consistency_profile.")
+
+    truncated_to = style["truncated_to"]
+    ratio_width, ratio_height = style["plot_ratio"]
+    fig_height = style["fig_width"] * ratio_height / ratio_width
+    fig, ax = plt.subplots(figsize=(style["fig_width"], fig_height), dpi=style["dpi"])
+
+    p_colors = style["gamma2_colors"]
+    if isinstance(p_colors, list):
+        if len(p_colors) != num_profiles:
+            raise ValueError("gamma2_colors must have the same number of options as consistency_profile.")
+    else:
+        cmap = plt.get_cmap("tab10")
+        p_colors = [cmap(i % cmap.N) for i in range(num_profiles)]
+
+    p_line_styles = style["gamma2_linestyles"]
+    if isinstance(p_line_styles, list):
+        if len(p_line_styles) != num_profiles:
+            raise ValueError("gamma2_linestyles must have the same number of options as consistency_profile.")
+    else:
+        p_line_styles = [p_line_styles for _ in range(num_profiles)]
+
+    p_linewidths = style["gamma2_linewidths"]
+    if isinstance(p_linewidths, list):
+        if len(p_linewidths) != num_profiles:
+            raise ValueError("gamma2_linewidths must have the same number of options as consistency_profile.")
+    else:
+        p_linewidths = [p_linewidths for _ in range(num_profiles)]
+
+    capacity_labels = style["capacity_labels"]
+    if capacity_labels is not None and len(capacity_labels) != num_profiles:
+        raise ValueError("capacity_labels must have the same number of options as consistency_profile.")
+
+    for i, profile in enumerate(consistency_profile):
+        gamma2_k_ranked = np.sort(np.asarray(profile))[::-1]
+        ax.plot(gamma2_k_ranked[:truncated_to + 1], color=p_colors[i], linestyle=p_line_styles[i], linewidth=p_linewidths[i])
+
+        if style["show_consistent_capacity"]:
+            capacity = np.round(consistent_capacity[i], decimals=style["cc_dp"])
+            middle_text = rf"$\Theta={capacity}$" if capacity_labels is None else rf"{capacity_labels[i]} $\Theta={capacity}$"
+            ax.text(truncated_to / 2, 0.5 - i * 0.08, middle_text, color=p_colors[i], fontweight="bold", horizontalalignment="center")
+
+    ax.set_xlim(0, truncated_to)
+    ax.set_ylim(0, 1)
+    ax.set_xticks([0, truncated_to // 2, truncated_to] if style["x_ticks"] is None else style["x_ticks"])
+    ax.set_yticks(style["y_ticks"])
+    ax.tick_params(axis="both", which="major", labelsize=style["font_size"], direction="in", length=6, width=style["axes_linewidth"], top=True, right=True)
+    ax.set_xlabel(r"$k$", fontsize=style["font_size"])
+    ax.set_ylabel(r"$\gamma^{2}_{k}$", rotation=0, labelpad=20, fontsize=style["font_size"])
+    ax.grid(style["grid"])
+    fig.tight_layout()
 
     return ax
