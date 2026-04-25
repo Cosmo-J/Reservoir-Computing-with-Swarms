@@ -1,10 +1,9 @@
-import enum
-from .ConfigManager import compare_params
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FuncAnimation
+from matplotlib.ticker import LinearLocator
 
-STYLE_DEFAULTS = {
+SIM_STYLE = {
     "boid_size": 10,
     "boid_alpha": 0.85,
     "arrow_scale": 10,
@@ -51,7 +50,7 @@ def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate
         frames = [0]
     frames = list(frames)
 
-    style = {**STYLE_DEFAULTS, **kwargs}
+    style = {**SIM_STYLE, **kwargs}
     num_replicas = len(replicas)
     num_frames = len(frames)
 
@@ -205,7 +204,7 @@ def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate
     return fig, axes[:num_plots]
 
 def torus_render(replicas:list, sim_width, frames=[0], bounds=None, overlay=True, animate=False, **kwargs):
-    style = {**STYLE_DEFAULTS, **kwargs}
+    style = {**SIM_STYLE, **kwargs}
 
     num_replicas = len(replicas)
     num_frames = len(frames)
@@ -396,51 +395,140 @@ def to_torus_3d(positions, sim_width, major_radius=10, minor_radius=4):
     return x, y, z
 
 
+RIDGE_STYLE = {
+    "dpi": 100,
+    "plot_ratio": (2, 1),
+    "fig_width": 20,
+    "grid":False,
+    "font_size": 34,
 
-def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False): 
-    lorenz_x_shifted = self.lorenz[prediction_distance:,0]
-    prediction_start = len(lorenz_x_shifted) - len(prediction)
-    lorenz_x = lorenz_x_shifted[prediction_start:]
+    "y_ticks": [-5, 0, 5],
+    "x_ticks": range(0,1250,250),
+    "axes_linewidth":2,
 
-    if x_range is None: 
-        print("Plotting total range")
-        x_range=[0,len(lorenz_x)]
-    elif x_range[0]>len(lorenz_x):
-        raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(lorenz_x)}")
+    "delta_t":None,
 
-    sim_delta_t = self.config['delta_t']
+    "signal_label": r"$\bar{x}_L$",
+    "signal_color": "black",
+    "signal_linestyle":"solid",
+    "signal_linewidth":2.5,
 
-    if simulation_steps:
-        look_ahead = prediction_distance
-    else:
-        look_ahead = prediction_distance*sim_delta_t
+
+    "predictions_line_styles":"dashed",
+    "predictions_labels":None,
+    "predictions_colors":None,
+    "predictions_linewidths":2.5,
     
-    y_label = f"lorenz_x(t+{look_ahead})"
 
-    fig, ax = plt.subplots(figsize=(20, 6))
+}
+
+
+def plot_ridge_predictions(predictions, signal, **kwargs):
+    style = {**RIDGE_STYLE, **kwargs}
+    
+    
+    plt.rcParams.update(
+        {"font.family": "serif",
+        "mathtext.fontset": "cm",
+        'axes.linewidth': style["axes_linewidth"]
+        })
+
+    num_predictions = len(predictions)
+    if num_predictions == 0:
+        raise ValueError("Predictions must contain at least one prediction dictionary")
+    
+    if not isinstance(predictions, list):
+        predictions = [predictions]
+
+    try:
+        signal = np.asarray(signal)
+        assert len(signal.shape)==1
+    except:
+        raise ValueError("Invalid signal. Must be array like and shape (T,1) where T is at least as many as your plot range.")
+
+    pred_dists = [p["prediction_distance"].item() for p in predictions]
+    if len(set(pred_dists))!=1:
+        print(f"WARNING: Predictions generated with different prediction distances so plot will be incorrect: {pred_dists}")
+        print(f"Using the first in list.")
+
+    prediction_distance = pred_dists[0]
+    signal_target = signal[prediction_distance:]
+
+
+    ratio_width, ratio_height = style["plot_ratio"]
+    fig_height = style["fig_width"] * ratio_height / ratio_width
+
+    fig, ax = plt.subplots(figsize=(style["fig_width"], fig_height), dpi=style["dpi"])
     plt.subplots_adjust(bottom=0.2)
 
-    ax.plot(lorenz_x, color='red', label='lorenz_x')
-    ax.plot(prediction, color='blue', linestyle='dashed', label='Prediction')
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
+    ax.plot(signal_target, color=style["signal_color"], label=style["signal_label"],linewidth=style["signal_linewidth"])
 
-    if simulation_steps:
-        plt.xlabel('t, simulation steps')
+    
+    p_colors = style["predictions_colors"]
+    if isinstance(p_colors, list):
+        if len(p_colors) != num_predictions:
+            raise ValueError(f"predictions_colors={p_colors} did not have the same number of options as number of predictions.")
     else:
-        plt.xlabel(f'time steps \n(1 time step = {sim_delta_t} simulation steps)')
+        cmap = plt.get_cmap("tab10")
+        p_colors = [cmap(i % cmap.N) for i in range(num_predictions)]
+
+    p_line_styles = style["predictions_line_styles"]
+    if isinstance(p_line_styles, list):
+        if len(p_line_styles) != num_predictions:
+            raise ValueError(f"predictions_line_styles={p_line_styles} did not have the same number of options as number of predictions.")
+    else:
+        p_line_styles = [p_line_styles for _ in range(num_predictions)]
+
+    p_linewidth = style["predictions_linewidths"]
+    if isinstance(p_linewidth, list):
+        if len(p_linewidth) != num_predictions:
+            raise ValueError(f"prediction_linewidth={p_linewidth} did not have the same number of options as number of predictions.")
+    else:
+        p_linewidth = [p_linewidth for _ in range(num_predictions)]
+
+
+
+    for i, p in enumerate(predictions):
+        prediction = p["prediction"]
+        prediction_offset = len(signal_target) - len(prediction)
+        x_values = np.arange(prediction_offset, prediction_offset + len(prediction))
+        ax.plot(x_values, prediction, color=p_colors[i], linestyle=p_line_styles[i],linewidth=p_linewidth[i])
+    
+    plt.grid(False)
+
+    if style["delta_t"] is None:
+        delta_t = 1
+    else:
+        delta_t = style["delta_t"]
+
+    y_label = rf"${style['signal_label'].strip('$')}(t+{prediction_distance*delta_t})$"
+
 
     plt.ylabel(y_label)
-    plt.title(f'correlation coefficient R: {corr_coef}')
+    ax.set_yticks(style["y_ticks"])
 
+    y_max = max(style["y_ticks"])
+    y_min = min(style["y_ticks"])
+    ax.set_ylim((y_min,y_max))
+    plt.xlabel(r"$t$")
 
-    ax.set_xlim(x_range)
-    ticks = ax.get_xticks()
-    ax.set_xticks(ticks)#stupid line to stop matplotlib getting upset
+    x_ticks_delta_t = []
+    for tick in style["x_ticks"]:
+        x = tick*delta_t
+        if x%1==0:
+            x_ticks_delta_t.append(int(x))
+        else:
+            x_ticks_delta_t.append(x)
+    ax.set_xticks(style["x_ticks"])
+    ax.set_xticklabels(x_ticks_delta_t)
+    x_max = max(style["x_ticks"])
+    x_min = min(style["x_ticks"])
+    ax.set_xlim((x_min,x_max))
 
-    if simulation_steps:
-        ax.set_xticklabels(ticks)
-    else:
-        ax.set_xticklabels((ticks*sim_delta_t))
+    
+    ax.xaxis.label.set_fontsize(style["font_size"])
+    ax.yaxis.label.set_fontsize(style["font_size"])
+
+    ax.tick_params(axis='both', which='major',labelsize=style["font_size"],direction='in',pad=15,width=style["axes_linewidth"],size=style["font_size"]/3,top=True)
 
     return ax
