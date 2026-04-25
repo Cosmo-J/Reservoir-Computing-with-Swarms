@@ -7,15 +7,15 @@ from .SaverLoader import create_mmap
 EPS =1e-12 # used for avoiding divide by 0
 
 class BoidSimulator:
-    def __init__(self,parameters,use_random_seed,memory_mapping=False,chunk_size=1000):
-        if len(parameters) <=0:
-            raise ValueError(".ini provided is empty.")
-        self.p = parameters
+    def __init__(self,config,driving_signal,use_random_seed:bool,memory_mapping:bool=False,chunk_size:int=0):
+        if len(config) <=0:
+            raise ValueError("Config provided is empty.")
+        self.p = config
 
+        self.driving_signal = self._validate_driving_signal(driving_signal)
         # Exception to the rule that the parameters shouldn't be attributes, just because keeping the following as an attribute improves readbility so much
-        self.torus = parameters['coord_system'] == 'torus'
+        self.torus = config['coord_system'] == 'torus'
 
-        self.lorenz_system = LorenzSimulator(self.p['l_sigma'],self.p['l_rho'],self.p['l_beta'])
         # Randomness related params
         self.set_seed(random=use_random_seed)
         self.using_seed = use_random_seed
@@ -24,6 +24,29 @@ class BoidSimulator:
         self.chunk_size = chunk_size
         self.memory_mapping = memory_mapping
 
+    def _validate_chunk_size(self,chunk_size):
+        if chunk_size > self.p['simulation_steps']:
+            raise ValueError("Chunk size cannot be greater than the number of simulation steps.")
+        elif chunk_size <=0:
+            raise ValueError("Chunk size cannot be less than or equal to 0")
+
+
+    def _validate_driving_signal(self,driving_signal):
+        """
+            Internal helper method for validating whether a driving signal has the correct format relative to the swarm.
+            Validates that the shape is correct, i.e., that it is T length (where the simlation will also be T length) containing x and y positions.
+
+            Parameters
+            ----------
+            driving_signal : np.ndarray shape = (T,2)
+                numpy array containing the driving signals positions at each timestep
+        """
+        shape = driving_signal.shape
+        target_shape = (self.p['simulation_steps'],2)
+        if shape != target_shape:
+            raise ValueError(f"Driving signal dimensionality is incorrect. Got {shape} instead of {target_shape}")
+
+        return driving_signal
 
     def set_seed(self,random):
         if random:
@@ -216,15 +239,15 @@ class BoidSimulator:
 
         self.spawn_bounds = (self.p['spawn_min'],self.p['spawn_max'])
 
-        lorenz = self.lorenz_system.generate_lorenz(simulation_steps, self.p['l_sampling_rate'], self.p['x_lorenz'], self.p['y_lorenz'], self.p['z_lorenz'])
+        signal = self.driving_signal
         p, v = self.generate_flock(boid_count, self.spawn_bounds, self.p['random_velocity'], self.p['random_position'])
 
         if self.torus:
             p = self.__torus_wrap(p) # wrap each boid pos over 200 boids
             #1. Center lorenz around a center where 
-            lorenz = lorenz+self.p['sim_width']/2
+            signal = signal+self.p['sim_width']/2
             #2. Wrap the recentered lorenz
-            lorenz = self.__torus_wrap(lorenz)# wrap each coordinate over all time steps
+            signal = self.__torus_wrap(signal)# wrap each coordinate over all time steps
         positions[0] = p
         velocities[0] = v
 
@@ -233,7 +256,7 @@ class BoidSimulator:
             current_pos = positions[t]
             current_vel = velocities[t]
 
-            new_v, new_x = self.__physics_step(current_pos, current_vel, lorenz[t])
+            new_v, new_x = self.__physics_step(current_pos, current_vel, signal[t])
 
             if self.p['coord_system'] == 'torus':
                 new_x = self.__torus_wrap(new_x)
@@ -248,7 +271,7 @@ class BoidSimulator:
         return {
             "positions": positions,
             "velocities": velocities,
-            "predator_positions": lorenz,
+            "predator_positions": signal,
             "simulation_steps" :simulation_steps,
             "boid_count" : boid_count,
             "bounds": self.spawn_bounds,

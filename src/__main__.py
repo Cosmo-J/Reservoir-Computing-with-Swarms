@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 
 from .SaverLoader import Saver, load_npzs
-from .Simulators import BoidSimulator
+from .Simulators import BoidSimulator, LorenzSimulator
 from .BoidVisualiser import flat_render,torus_render
 from .ConfigManager import load_config, generate_config, compare_params
 
@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--run',            '-r',   type=str,   nargs='?', const=True,                 help="Run a simulation given a .ini file path of parameters.")
 parser.add_argument('--iterations',     '-i',   type=int,   nargs='?', default=1,                  help="Number of times you want the simulation to be run.")
 parser.add_argument('--no-seed',                type=int,  nargs='?', default=False, const=True,    help="Whether or not the simulator uses a random seed. False uses the seed from the config file, true uses a random seed.")
-parser.add_argument('--generate-params','-g',   type=str,   nargs='?', const='./',                 help="Give a file path to generate an empty .ini with default parameters there.")
+parser.add_argument('--generate-config','-g',   type=str,   nargs='?', const='./',                 help="Give a file path to generate an empty .ini with default config there.")
 parser.add_argument('--view',           '-v',   type=str,   nargs='?', const=True,                 help="View a previous simulation, given the file path of a valid '.npz'. Defaults to true, which can be used to view a generated run.")
 parser.add_argument('--save',           '-s',   type=str,   nargs='?', const=False,                help="If iterations is more than 1, use to specify the directory in which a run is saved. Otherwise it can be used to choose a specific save name")
 parser.add_argument('--chunk',          '-c',   type=int,   nargs='?', default=0,  const=10000,    help="int value for chunk size used; enables use of numpy memory mapping.")
@@ -34,8 +34,8 @@ def main(custom_args=None):
         args = parser.parse_args()
 
     # if generating params, early return because this is an iscolated use case
-    if args.generate_params:
-        target_dir = args.generate_params
+    if args.generate_config:
+        target_dir = args.generate_config
         if target_dir == './':
             target_dir = DEFAULT_SAVE_PATH
 
@@ -93,13 +93,20 @@ def main(custom_args=None):
             saver = Saver(save_path)
 
         # setting the seed
-        Simulator = BoidSimulator(simulation_parameters,use_random_seed=no_seed,memory_mapping=we_be_memmap,chunk_size=chunking)
+
+        # Generate the lorenz system
+        lorenz_system = LorenzSimulator(simulation_parameters['l_sigma'],simulation_parameters['l_rho'],simulation_parameters['l_beta'])
+        l_xy = lorenz_system.generate_lorenz(simulation_parameters['simulation_steps'], simulation_parameters['l_sampling_rate'], simulation_parameters['x_lorenz'], simulation_parameters['y_lorenz'], simulation_parameters['z_lorenz'])
+
+        # Initialise Simualtor
+        Simulator = BoidSimulator(simulation_parameters,driving_signal=l_xy,use_random_seed=no_seed,memory_mapping=we_be_memmap,chunk_size=chunking)
 
         datas=[]
         for i in trange(iterations,desc='Iterations',position=0):
             result = Simulator.run_simulation()
             datas.append(result) 
-            if we_be_saving: saver.save_run(result)
+            if we_be_saving: 
+                saver.save_run(result,cleanup_tmps=True)
 
 
         if view: 
