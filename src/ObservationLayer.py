@@ -13,7 +13,7 @@ from scipy.spatial import KDTree
 import os
 import gc
 
-class ObservationAndPrediction(ABC):
+class ReadoutMethod(ABC):
     """
         Abstract Base Class for manging reservoir replicas, creating readouts on those replicas, 
         and performing the different kinds of analysis on those readouts found in Lymburn et al (2021).
@@ -96,7 +96,7 @@ class ObservationAndPrediction(ABC):
         if chunk_size > self.config['simulation_steps']/2: raise ValueError(f"Chunksize must be at most equal to half the timesteps, as otherwise it does nothing")
 
         self.washout_data(washout)
-        self.lorenz = self.replica1.get('predator_positions')
+        self.predator_positions = self.replica1.get('predator_positions')
 
         # stuff relating to very large simulations
         rep1_memmap = self.replica1.get('memory_map',False)
@@ -118,7 +118,7 @@ class ObservationAndPrediction(ABC):
             Called internally if class instance is initialised with `cleanup_tmps=True`
         
             - Find a list of temporary files by looking inside `./tmp`.
-            - Goes through live instances of the ObservationAndPrediction objects, and subtracts any tempfile references from the aformentioned list.
+            - Goes through live instances of the ReadoutMethod objects, and subtracts any tempfile references from the aformentioned list.
             - Deletes the remaining tmp files in the list.
             - Uses gc.get_objects which can be slow
         """        
@@ -131,7 +131,7 @@ class ObservationAndPrediction(ABC):
         found_refs.update(self.tmp_paths)
         
         for obj in gc.get_objects():
-            if isinstance(obj, ObservationAndPrediction):
+            if isinstance(obj, ReadoutMethod):
                 for path in getattr(obj, "tmp_paths", []):
                     found_refs.add(path)
 
@@ -253,8 +253,13 @@ class ObservationAndPrediction(ABC):
         else:
             methodology = self.__getattribute__(methodology)
 
-        return methodology(sv1,sv2)
-
+        cc, gamma2 =  methodology(sv1,sv2)
+        return {
+            "methodology":methodology,
+            "consistent_capacity":cc,
+            "consistency_profile":gamma2,
+            "simulation_config":self.config
+        }
 
     # Helpers for calculating things using chunks
     def _mean(self,sv,axis=0):
@@ -497,9 +502,9 @@ class ObservationAndPrediction(ABC):
 
 
     # Profiling methods
-    def ridge_prediction(self,state_vector,train_size=0.6,prediction_distance=1,ridge_alpha=1):
+    def ridge_prediction(self,linear_readout,train_size=0.6,prediction_distance=1,ridge_alpha=1):
         """
-            Use ridge regression to make a prediction about the x position of the lorenz attractor using  a reservoir readout.
+            Use ridge regression to make a prediction about the x position of driving signal using a reservoir readout.
 
             Parameters
             ---------
@@ -532,14 +537,16 @@ class ObservationAndPrediction(ABC):
             The alpha found if `ridge_alpha=None` (RidgeCV), otherwise, returns the parameter `ridge_alpha`
         """        
         temp_file_paths = []
-        if state_vector.shape[0]<=prediction_distance:
-            raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {state_vector.shape[0]}")
+        if linear_readout.shape[0]<=prediction_distance:
+            raise ValueError(f"Prediction distance {prediction_distance} is greater than the number of time steps {linear_readout.shape[0]}")
         
+
+
         with tqdm(desc="Ridge Prediction",position=0,leave=False) as pbar:
-            # y is an array of lorenz x coordinates starting from the prediction distance
-            y = self.lorenz[prediction_distance:,0]
+            # y is an array of predator x coordinates starting from the prediction distance
+            y = self.predator_positions[prediction_distance:,0]
             new_total_time = len(y)
-            X = state_vector[:new_total_time]
+            X = linear_readout[:new_total_time]
 
             split_idx = int(new_total_time * train_size)
 
@@ -608,10 +615,11 @@ class ObservationAndPrediction(ABC):
                 "prediction_distance":prediction_distance,
                 "train_size":train_size,
                 "alpha_search": ridge_alpha,
-                "simulation_config": None,
+                "simulation_config": self.config,
                 "prediction": prediction,
                 "alpha": best_alpha,
                 "corr_coef": corr_coef,
+                "y_test": y_test,
             }
 
 
@@ -754,8 +762,6 @@ class ObservationAndPrediction(ABC):
 
         cleanup_tmps(temp_file_paths)
         return consistent_capacity,gamma2
-
-
 
 
     def faithful(self,sv1,sv2):
@@ -903,12 +909,12 @@ class ObservationAndPrediction(ABC):
     def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False):
         """
             Intended to be used on the outputs of `ridge_prediction()`.
-            Plots the predicted lorenz x coordinates against the actual lorenz coordinates, as well as displaying the correlation coefficient.
+            Plots the predicted predator x coordinates against the actual predator coordinates, as well as displaying the correlation coefficient.
 
             Parameters
             ----------
             prediction : np.ndarray
-                Shape (N,) which is the predicted position of the lorenz attractor at each N time step. Intended to be used with `ridge_prediction()`.
+                Shape (N,) which is the predicted position of the predator at each N time step. Intended to be used with `ridge_prediction()`.
             corr_coef : float
                 float correlation coefficient which is displayed at the top of the plot.
             x_range : tuple[float,float], optional
@@ -925,15 +931,15 @@ class ObservationAndPrediction(ABC):
             --------
             `ridge_prediction()` : For getting `prediction` and `corr_coef`
         """        
-        lorenz_x_shifted = self.lorenz[prediction_distance:,0]
-        prediction_start = len(lorenz_x_shifted) - len(prediction)
-        lorenz_x = lorenz_x_shifted[prediction_start:]
+        predator_x_shifted = self.predator_positions[prediction_distance:,0]
+        prediction_start = len(predator_x_shifted) - len(prediction)
+        predator_x = predator_x_shifted[prediction_start:]
 
         if x_range is None: 
             print("Plotting total range")
-            x_range=[0,len(lorenz_x)]
-        elif x_range[0]>len(lorenz_x):
-            raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(lorenz_x)}")
+            x_range=[0,len(predator_x)]
+        elif x_range[0]>len(predator_x):
+            raise ValueError(f"Invalid x_range: minimum {x_range[0]} greater than the total number of simulation steps {len(predator_x)}")
     
         sim_delta_t = self.config['delta_t']
 
@@ -942,12 +948,12 @@ class ObservationAndPrediction(ABC):
         else:
             look_ahead = prediction_distance*sim_delta_t
         
-        y_label = f"lorenz_x(t+{look_ahead})"
+        y_label = f"predator_x(t+{look_ahead})"
 
         fig, ax = plt.subplots(figsize=(20, 6))
         plt.subplots_adjust(bottom=0.2)
 
-        ax.plot(lorenz_x, color='red', label='lorenz_x')
+        ax.plot(predator_x, color='red', label='lorenz_x')
         ax.plot(prediction, color='blue', linestyle='dashed', label='Prediction')
         ax.legend(loc="upper left")
         ax.grid(True, alpha=0.3)
@@ -1027,16 +1033,16 @@ class ObservationAndPrediction(ABC):
         return ax
 
 
-class KernelReadout(ObservationAndPrediction):
+class KernelReadout(ReadoutMethod):
     """
-        Subclass of `ObservationAndPrediction` used to generate observation kernels and perform kernel readouts.
+        Subclass of `ReadoutMethod` used to generate observation kernels and perform kernel readouts.
         Heavily based on the kernel observation layer methodology described in Lymburn et al (2021).
 
         Only support analysis between two replicas of a simulation.
 
         See Also
         --------
-        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `ReadoutMethod` : Abstract Base Class for manging, creating readouts, and analysing replicas.
         `NaiveReadout` : Subclass which is used to perform a naive readout.
         `COMReadout` : Subclass which is used to perform a center of mass readout.
 
@@ -1076,9 +1082,9 @@ class KernelReadout(ObservationAndPrediction):
         tmp_paths : list[str]
             When a temporary file is created its path is added to this list. Referenced in `_cleanup_tmps` to create a whitelist 
             of still referenced temporary files that shouldn't be deleted.
-        lorenz : np.ndarray
+        predator : np.ndarray
             Shape (N,2) N simulation_steps/samples and x,y position of the predator positions found in replica1. Intended usage is with its
-            namesake a lorenz attractor, although in theory could be any driving signal stored as the predator positions in a given
+            the lorenz attractor, although in theory could be any driving signal stored as the predator positions in a given
             replica so long as it's shape is the same. Note, that the class does not check whether replica1 and replica2 have the same 
             driving signal, as this attribute is also used in calculations involving replica2.
     """
@@ -1218,9 +1224,9 @@ class KernelReadout(ObservationAndPrediction):
             return np.concatenate([r1_t, r2_t, r3_t], axis=1)
 
 
-class NaiveReadout(ObservationAndPrediction):
+class NaiveReadout(ReadoutMethod):
     """
-        Subclass of `ObservationAndPrediction`. 
+        Subclass of `ReadoutMethod`. 
         
         _"first considering the naïve approach of taking the two position coordinates 
         of the N agents in the swarm and forming a 2N node reservoir."_ - Lymburn et al
@@ -1229,7 +1235,7 @@ class NaiveReadout(ObservationAndPrediction):
 
         See Also
         --------
-        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `ReadoutMethod` : Abstract Base Class for manging, creating readouts, and analysing replicas.
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `COMReadout` : Subclass which is used to perform a center of mass readout.
     """
@@ -1377,9 +1383,9 @@ class NaiveReadout(ObservationAndPrediction):
         return consistent_capacity, gamma_squared
 
 
-class COMReadout(ObservationAndPrediction):
+class COMReadout(ReadoutMethod):
     """
-        Subclass of `ObservationAndPrediction`. 
+        Subclass of `ReadoutMethod`. 
         
         _"we compare the performance of the full swarm reservoir and one made out of the two CoM coordinates only"_ - Lymburn et al
 
@@ -1387,7 +1393,7 @@ class COMReadout(ObservationAndPrediction):
 
         See Also
         --------
-        `ObservationAndPrediction` : Abstract Base Class for manging, creating readouts, and analysing replicas.
+        `ReadoutMethod` : Abstract Base Class for manging, creating readouts, and analysing replicas.
         `KernelReadout` : Subclass which is used to generate observation kernels and perform kernel readouts.
         `NaiveReadout` : Subclass which is used to perform a naive readout.
     """
@@ -1419,7 +1425,7 @@ class COMReadout(ObservationAndPrediction):
             return pos_flattened
 
 
-class FlatReadout(ObservationAndPrediction):
+class FlatReadout(ReadoutMethod):
     def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
         super().__init__(replica1,replica2,washout,chunk_size)
 
