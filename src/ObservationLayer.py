@@ -5,7 +5,7 @@ from sklearn.linear_model import Ridge
 from sklearn.linear_model import RidgeCV
 
 from .ConfigManager import compare_params
-from .SaverLoader import create_mmap, TMP_PATH,cleanup_tmps
+from .SaverLoader import create_mmap, TMP_PATH,npy_cleanup
 
 from tqdm import trange,tqdm
 from matplotlib import pyplot as plt
@@ -206,8 +206,8 @@ class ReadoutMethod(ABC):
             readout_dict = {
                 "readout":readout,
                 "readout_shape":readout.shape,
-                "readout_method":self.__class__.__name__,
-                "simulation_config":self.config,
+                "readout_method":f"{self.__class__.__name__}",
+                "simulation_config":dict(self.config),
             }
             readouts_list.append(readout_dict)
         return readouts_list
@@ -218,7 +218,7 @@ class ReadoutMethod(ABC):
         pass
 
 
-    def calc_consistency_profile(self,sv1,sv2,methodology):
+    def calc_consistency_profile(self,sv1,sv2,methodology,regularisation_term=1e-9):
         """
             Calculate the consistency profile of a reservoir readout as described in the appendix of Lymburn et al (2021). 
             Allows for the specific `methodology` of calculating the consistency profile to be specified in allowance of the fact
@@ -253,9 +253,10 @@ class ReadoutMethod(ABC):
         else:
             methodology = self.__getattribute__(methodology)
 
-        cc, gamma2 =  methodology(sv1,sv2)
+        cc, gamma2 =  methodology(sv1,sv2,regularisation_term=regularisation_term)
+
         return {
-            "methodology":methodology,
+            "methodology":f"{methodology}",
             "consistent_capacity":cc,
             "consistency_profile":gamma2,
             "simulation_config":self.config
@@ -463,15 +464,12 @@ class ReadoutMethod(ABC):
         if sv2 is None:
             sv2 = sv1
             if center:
-                sv1_mean,tmp1 = self._mean(sv1,0)
+                sv1_mean = self._mean(sv1,0)
                 sv2_mean = sv1_mean
-                tmp_paths.extend(tmp1)
         else:
             if center:
-                sv1_mean,tmp1 = self._mean(sv1,0)
-                sv2_mean,tmp2 = self._mean(sv2,0)
-                tmp_paths.extend(tmp1)
-                tmp_paths.extend(tmp2)
+                sv1_mean = self._mean(sv1,0)
+                sv2_mean = self._mean(sv2,0)
 
         if not center:
             sv1_mean = np.zeros(sv1.shape[1],dtype='float64')
@@ -498,7 +496,6 @@ class ReadoutMethod(ABC):
             cov = (sv1_centered.T @ sv2_centered)/ (simulation_steps-1)
 
         return cov,tmp_paths
-
 
 
     # Profiling methods
@@ -608,7 +605,7 @@ class ReadoutMethod(ABC):
             corr_coef = numer/denom
             pbar.update(1)
 
-            cleanup_tmps(temp_file_paths)
+            npy_cleanup(temp_file_paths)
 
             return {
                 "readout_method": self.__class__.__name__,
@@ -623,7 +620,7 @@ class ReadoutMethod(ABC):
             }
 
 
-    def v1(self,sv1,sv2):
+    def v1(self,sv1,sv2,regularisation_term=1e-9):
         """
             like faithful except the Css is averaged against its transpose as to ensure a symetric matrix is eigendecomposed at the end.
         """
@@ -654,7 +651,7 @@ class ReadoutMethod(ABC):
 
 
         # "To ensure numerical stability, we add a small regularization term" - lymburn et al
-        cxx_reg = cxx + 1e-10 * np.eye(cxx.shape[0],dtype=np.float64)
+        cxx_reg = cxx + regularisation_term * np.eye(cxx.shape[0],dtype=np.float64)
 
         Sigma, Q = np.linalg.eigh(cxx_reg) # eigendecompoise the autocovariance
         assert np.linalg.cond(cxx_reg) < 1e16, f"{np.linalg.cond(cxx_reg)} - condition of matrix exceeds floating point limit 1e16 so data loss will be incurred by any transformation" 
@@ -696,11 +693,11 @@ class ReadoutMethod(ABC):
 
         #assert np.allclose(np.sum(gamma2),consistent_capacity)
 
-        cleanup_tmps(temp_file_paths)
+        npy_cleanup(temp_file_paths)
         return consistent_capacity,gamma2
 
     
-    def v2(self,sv1,sv2):
+    def v2(self,sv1,sv2,regularisation_term=1e-9):
         """
             like v1 except seperate transforms are calculated for each state vector
         """
@@ -719,7 +716,7 @@ class ReadoutMethod(ABC):
             temp_file_paths.extend(tmp1)
 
 
-            cxx_reg = cxx + 1e-9 * np.eye(cxx.shape[0],dtype=np.float64)
+            cxx_reg = cxx + regularisation_term * np.eye(cxx.shape[0],dtype=np.float64)
 
             Sigma, Q = np.linalg.eigh(cxx_reg) # eigendecompoise the autocovariance
             #assert np.linalg.cond(cxx_reg) < 1e16, f"{np.linalg.cond(cxx_reg)} - condition of matrix exceeds floating point limit 1e16 so data loss will be incurred by any transformation" 
@@ -755,16 +752,15 @@ class ReadoutMethod(ABC):
 
         # eigendecompoise the autocovariance
         gamma2 = np.linalg.eigvalsh(css_symm)
-        
 
         consistent_capacity = np.trace(css_symm) # or could sum gamma2
 
 
-        cleanup_tmps(temp_file_paths)
+        npy_cleanup(temp_file_paths)
         return consistent_capacity,gamma2
 
-
-    def faithful(self,sv1,sv2):
+    
+    def faithful(self,sv1,sv2,regularisation_term=1e-9):
         """
             This is a methodology for calculating the consistency profile. Named for the fact that it's the most literal interpretation of
             the techniques described in section 1 of the appendix in Lymburn et al (2021).
@@ -812,7 +808,7 @@ class ReadoutMethod(ABC):
         temp_file_paths.extend(tmp1)
 
         # "To ensure numerical stability, we add a small regularization term 10−9 × I to the covariance matrix prior to calculating T◦."
-        Cxx_reg = Cxx + 1e-9 * np.eye(len(Cxx))
+        Cxx_reg = Cxx + regularisation_term * np.eye(len(Cxx))
 
 
         # "Eigendecomposition of this positive semi-definite matrix reads Cxx = QΣ²Qᵀ "
@@ -860,50 +856,9 @@ class ReadoutMethod(ABC):
         # appendix (1) equation (A4), defines that the consistent capacity is the trace of Css
         consistent_capacity = np.trace(Css)
         
-        cleanup_tmps(temp_file_paths)
+        npy_cleanup(temp_file_paths)
         return consistent_capacity,gamma_squared
 
-
-    def gamma2_lymburn_2021(self, sv1, sv2, lam=1e-9):
-        temp_file_paths = []
-        x1, tmp1 = self._center(sv1)
-        x2, tmp2 = self._center(sv2)
-        temp_file_paths.extend(tmp1)
-        temp_file_paths.extend(tmp2)
-
-        # Appendix A.1-A.3
-        C1,tmp1 = self._covariance(x1, center=False)
-        C2,tmp2 = self._covariance(x2, center=False)
-        temp_file_paths.extend(tmp1)
-        temp_file_paths.extend(tmp2)
-
-        Cxx = 0.5 * (C1 + C2)
-        Cxx = Cxx + lam * np.eye(Cxx.shape[0], dtype=np.float64)
-
-        # Whitening / sphering transform
-        evals, Q = np.linalg.eigh(Cxx)
-        evals = np.clip(evals, lam, None)
-        T0 = Q @ np.diag(1.0 / np.sqrt(evals)) @ Q.T
-
-        x1o, tmp1 = self._sv_transform(x1, T0)
-        x2o, tmp2 = self._sv_transform(x2, T0)
-        temp_file_paths.extend(tmp1)
-        temp_file_paths.extend(tmp2)
-
-        # Appendix A.6-A.7
-        Css, tmp1 = self._covariance(x1o, x2o, center=False)
-        Css = 0.5 * (Css + Css.T)
-        temp_file_paths.extend(tmp1)
-
-        # Appendix A.8: use SVD, not raw eigenvalues of a non-symmetric matrix
-        U, s, Vt = np.linalg.svd(Css, full_matrices=False)
-        gamma2 = s
-
-        # Appendix A.9
-        theta = np.trace(Css)
-
-        cleanup_tmps(temp_file_paths)
-        return theta, gamma2
 
     # Plotting methods
     def plot_ridge_prediction(self,prediction,corr_coef,prediction_distance,x_range=None,simulation_steps=False):
@@ -1089,7 +1044,7 @@ class KernelReadout(ReadoutMethod):
             driving signal, as this attribute is also used in calculations involving replica2.
     """
     def __init__(self,replica1,replica2,kernel_number,washout,chunk_size,cleanup_tmps=True):
-        super().__init__(replica1,replica2,washout,chunk_size)
+        super().__init__(replica1,replica2,washout,chunk_size,cleanup_tmps)
         self.kernel_number = kernel_number
         self.centers, self.widths = self.generate_kernels()
 
@@ -1240,7 +1195,7 @@ class NaiveReadout(ReadoutMethod):
         `COMReadout` : Subclass which is used to perform a center of mass readout.
     """
     def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
-        super().__init__(replica1,replica2,washout,chunk_size)
+        super().__init__(replica1,replica2,washout,chunk_size,cleanup_tmps)
     
 
     def _create_readout(self,replica):
@@ -1257,130 +1212,15 @@ class NaiveReadout(ReadoutMethod):
             for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_data = x[chunk_start:chunk_end]
-                npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_data.shape[0],chunk_data.shape[1]*chunk_data.shape[2])
+                chunk_steps,chunk_num_boids,_ = chunk_data.shape
+                chunk_features = chunk_num_boids * 2
+                npy[chunk_start:chunk_end] = chunk_data.reshape(chunk_steps,chunk_features)
 
             npy.flush()
             return npy
         else:
-            pos_flattened = x.reshape(x.shape[0],x.shape[1]*x.shape[2]) # flattens the x and y positions into a single vector
+            pos_flattened = x.reshape(simulation_steps,features) # flattens the x and y positions into a single vector
             return pos_flattened
-
-
-    def appendix_2(self, sv1, sv2, regularization=1e-9):
-        """
-        Consistency profile for the naive/flat swarm readout, using the
-        permutation-symmetry reduction from Appendix A.2 of Lymburn et al. (2021).
-
-        Assumes `sv1` and `sv2` come from this class's flat readout, i.e.
-        the positions were flattened from shape (T, N_agents, D) to (T, N_agents*D)
-        in default C-order:
-            [x_1, y_1, x_2, y_2, ..., x_N, y_N]   for D=2
-
-        Returns
-        -------
-        consistent_capacity : float
-        gamma_squared : np.ndarray, shape (modes,)
-            Full consistency spectrum. By symmetry only `D` entries are non-zero
-            asymptotically; the rest are returned as zeros.
-        """
-        # zero-mean replicas, consistent with Appendix A
-        x1 = self._center(sv1)
-        x2 = self._center(sv2)
-
-        simulation_steps, modes = x1.shape
-        spatial_dims = self.replica1["positions"].shape[-1]
-
-        if modes % spatial_dims != 0:
-            raise ValueError(
-                f"State vector has {modes} modes, which is not divisible by "
-                f"the spatial dimension {spatial_dims}."
-            )
-
-        n_agents = modes // spatial_dims
-
-        # Indices for each physical dimension in the *existing* boid-major flat layout.
-        # For D=2:
-        #   dim_indices[0] -> x coords: [0, 2, 4, ...]
-        #   dim_indices[1] -> y coords: [1, 3, 5, ...]
-        dim_indices = [np.arange(d, modes, spatial_dims) for d in range(spatial_dims)]
-
-        def _diag_offdiag_means(block):
-            """Mean of diagonal and off-diagonal entries of an N x N block."""
-            diag_mean = np.mean(np.diag(block))
-            if n_agents == 1:
-                offdiag_mean = 0.0
-            else:
-                offdiag_mean = (block.sum() - np.trace(block)) / (n_agents * (n_agents - 1))
-            return diag_mean, offdiag_mean
-
-        # ------------------------------------------------------------------
-        # 1) Structured Cxx:
-        #    in each dimension-dimension block, diagonal entries are equal
-        #    and off-diagonal entries are equal.
-        # ------------------------------------------------------------------
-        cxx_raw = self._covariance(x1, center=False)
-
-        eye_N = np.eye(n_agents, dtype=np.float64)
-        ones_N = np.ones((n_agents, n_agents), dtype=np.float64)
-
-        cxx_struct = np.zeros_like(cxx_raw, dtype=np.float64)
-
-        # Optional small matrices corresponding to Appendix A.5
-        A = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
-        B = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
-
-        for a, rows in enumerate(dim_indices):
-            for b, cols in enumerate(dim_indices):
-                block = cxx_raw[np.ix_(rows, cols)]
-
-                diag_mean, offdiag_mean = _diag_offdiag_means(block)
-
-                # block = a_ab * I_N + b_ab * 1_N
-                A[a, b] = diag_mean - offdiag_mean
-                B[a, b] = offdiag_mean
-
-                cxx_struct[np.ix_(rows, cols)] = A[a, b] * eye_N + B[a, b] * ones_N
-
-        # Numerical cleanup
-        cxx_struct = 0.5 * (cxx_struct + cxx_struct.T)
-        cxx_reg = cxx_struct + regularization * np.eye(modes, dtype=np.float64)
-
-        # Whitening transform T^o from Appendix A.2 / A.3
-        evals, evecs = np.linalg.eigh(cxx_reg)
-        evals = np.clip(evals, regularization, None)
-        To = evecs @ np.diag(1.0 / np.sqrt(evals)) @ evecs.T
-
-        x1o = self._sv_transform(x1, To)
-        x2o = self._sv_transform(x2, To)
-
-        # ------------------------------------------------------------------
-        # 2) Structured Css:
-        #    after whitening, each dimension-dimension block is constant,
-        #    i.e. Css = H ⊗ 1_N in dim-major notation.
-        # ------------------------------------------------------------------
-        css_raw = self._covariance(x1o, x2o, center=False)
-
-        H = np.zeros((spatial_dims, spatial_dims), dtype=np.float64)
-
-        for a, rows in enumerate(dim_indices):
-            for b, cols in enumerate(dim_indices):
-                block = css_raw[np.ix_(rows, cols)]
-                H[a, b] = np.mean(block)
-
-        # Signal covariance should be symmetric PSD; enforce symmetry numerically
-        H = 0.5 * (H + H.T)
-
-        # By symmetry, full Css has only `spatial_dims` non-zero eigenvalues:
-        # eig(H ⊗ 1_N) = eig(H) * eig(1_N), and eig(1_N) = {N, 0, ..., 0}
-        gamma_nonzero = n_agents * np.linalg.eigvalsh(H)
-        gamma_nonzero = np.clip(np.real(gamma_nonzero), 0.0, None)
-
-        gamma_squared = np.zeros(modes, dtype=np.float64)
-        gamma_squared[:spatial_dims] = gamma_nonzero
-
-        consistent_capacity = float(gamma_nonzero.sum())
-
-        return consistent_capacity, gamma_squared
 
 
 class COMReadout(ReadoutMethod):
@@ -1398,7 +1238,7 @@ class COMReadout(ReadoutMethod):
         `NaiveReadout` : Subclass which is used to perform a naive readout.
     """
     def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
-        super().__init__(replica1,replica2,washout,chunk_size)
+        super().__init__(replica1,replica2,washout,chunk_size,cleanup_tmps)
 
 
     def _create_readout(self, replica):
@@ -1425,9 +1265,9 @@ class COMReadout(ReadoutMethod):
             return pos_flattened
 
 
-class FlatReadout(ReadoutMethod):
+class NoReadout(ReadoutMethod):
     def __init__(self,replica1,replica2,washout,chunk_size,cleanup_tmps=True):
-        super().__init__(replica1,replica2,washout,chunk_size)
+        super().__init__(replica1,replica2,washout,chunk_size,cleanup_tmps)
 
 
     def _create_readout(self, replica):
@@ -1448,7 +1288,7 @@ class FlatReadout(ReadoutMethod):
             for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_data_x = x[chunk_start:chunk_end]
-                chunk_data_v = x[chunk_start:chunk_end]
+                chunk_data_v = v[chunk_start:chunk_end]
 
                 x_flatten = chunk_data_x.reshape(chunk_data_x.shape[0],chunk_data_x.shape[1]*chunk_data_x.shape[2])
                 v_flatten = chunk_data_v.reshape(chunk_data_v.shape[0],chunk_data_v.shape[1]*chunk_data_v.shape[2])
