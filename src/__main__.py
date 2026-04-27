@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from .SaverLoader import Saver, load_npzs
 from .Simulators import BoidSimulator, LorenzSimulator
-from .BoidVisualiser import flat_render,torus_render
+from .Visualisers import flat_render,torus_render
 from .ConfigManager import load_config, generate_config, compare_params
 
 

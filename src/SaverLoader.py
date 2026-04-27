@@ -1,4 +1,5 @@
 from multiprocessing import Value
+from os.path import isdir
 import numpy as np
 import os
 import tempfile
@@ -242,7 +243,7 @@ class Saver:
 
         return full_save_path_and_name
 
-    def save_pcas(self,data,prefix=""):
+    def save_pca(self,data,prefix=""):
         assert os.path.exists(self.save_path), f"{self.save_path} - Save path no longer exists."  
         if prefix=="": 
             name = f"{os.path.basename(self.save_path)}_pcas"
@@ -259,13 +260,13 @@ class Saver:
         candidate_paths.append(subdir_save_path)
         candidate_paths.append(main_save_path)
 
-
+        full_save_path_and_name = None
         errors = []
         for c_path in candidate_paths:
             try:    
                 np.savez(
                     c_path,
-                    methodology=data["methodology"],
+                    methodology=str(data["methodology"]),
                     consistent_capacity=data["consistent_capacity"],
                     consistency_profile=data["consistency_profile"],
                     simulation_config=data['simulation_config'],
@@ -273,15 +274,15 @@ class Saver:
                 print(f"Saving - {c_path}")
                 full_save_path_and_name = c_path
                 break
-            except:
-                errors.append(c_path)
+            except Exception as e:
+                print(f"Path Failed - {c_path}")
+                errors.append(e)
 
-        if len(errors)>0:
+        if len(errors)==2:
             print("Saving incurred errors:")
             for path in errors:
-                print(f"{path}")
-            if not full_save_path_and_name:
-                raise Exception("Save Failed.")
+                print(f"\t{path}")
+            raise Exception("Save Failed.")
 
         return full_save_path_and_name
 
@@ -419,10 +420,29 @@ def load_readout(path: str, memory_map=False):
 
 
 def load_npzs(paths: list,re_filter:str="",memory_map=False,load_function=load_run):
-    '''
-        Takes some paths, of directories (in which it searches for npzs, or npz paths)
-        :return: array of dictionaries containing the npz runs it found
-    '''
+    """Used to load multiple NPZ files given a load function corresponding to the saved NPZs type
+
+    Parameters
+    ----------
+    paths : list
+        list of paths which should be searched for npz files
+    re_filter : str, optional
+        case insensitive name filter on the files. Finds matching patterns
+    memory_map : bool, optional
+        whether or not to use numpy memory mapping when loading the npzs, by default False
+    load_function : callable, optional
+        function used to load the npz files. Options are load_run, load_pca, load_prediction, load_readout. By default load_run
+
+    Returns
+    -------
+    list
+        list of dictionary forms of the npz files
+
+    Raises
+    ------
+    ValueError
+        if the load function isn't one of the supported ones
+    """
 
 
     if load_function is None or not callable(load_function):
@@ -436,10 +456,10 @@ def load_npzs(paths: list,re_filter:str="",memory_map=False,load_function=load_r
         if os.path.isdir(p):
             with os.scandir(p) as sub_files:
                 for f in sub_files:
-                    if f.name.endswith('.npz') and re.search(re_filter, f.name):
+                    if f.name.endswith('.npz') and re.search(re_filter.lower(), f.name.lower()):
                         npz_paths.append(f.path)
         else:
-            if re.search(re_filter, os.path.basename(p)):
+            if re.search(re_filter.lower(), os.path.basename(p).lower()):
                 npz_paths.append(p)
 
     if memory_map: 
@@ -490,62 +510,56 @@ def create_mmap(prefix, shape, dtype='float64'):
     return np.memmap(path, dtype=dtype, mode='w+', shape=shape), path
 
 
-def cleanup_tmps(paths):
-    failed_paths = []
+def npy_cleanup(tmp_dir_path,re_filter:str=""):
+    """
+        Use to cleanup (delete) temporary .npy files.
+
+    Parameters
+    ----------
+    tmp_dir_path : str
+        path to directory containing files to be cleaned up (deleted)
+    re_filter : str, optional
+        optional regex filter for determining which files are deleted
+
+    Raises
+    ------
+    FileNotFoundError
+        when tmp_dir_path doesn't exist
+    """
+
+    paths = []
+    if not isinstance(tmp_dir_path,list):
+        paths.append(tmp_dir_path)
+    else:
+        paths = tmp_dir_path
+
+    count = 0
     for p in paths:
-        try:
-            if os.path.exists(p):
+        if not os.path.exists(p):
+            raise FileNotFoundError(p)
+        if os.path.isdir(p):
+            for f in os.scandir(p):
+                if f.name.endswith('.npy') and re.search(re_filter, f.name):
+                    try:
+                        os.remove(f.path)
+                        count += 1
+                    except Exception as e:
+                        print(f"Failed to remove {f.path}: {e}")
+        else:
+            filename = os.path.basename(p)
+            if filename.endswith('.npy') and re.search(re_filter, filename):
                 try:
                     os.remove(p)
+                    count += 1
                 except Exception as e:
-                    failed_paths.append((e,p))
-        except Exception as e:
-            failed_paths.append((e,p))
+                    print(f"Failed to remove {p}: {e}")
 
-    print(f"Succesfully removed {len(paths)-len(failed_paths)} temporary files.")
-    if len(failed_paths)!=0:
-        print(f"Failed to remove {len(failed_paths)}. Exceptions:")
-        for e,p in failed_paths:
-            print(f"\t{e}: {p}")
+    print(f"Removed {count} temporary .npy file(s).")
 
 
 
-#TODO write these functions
-def mmap_cleanup(ObjectType,tmp_path=TMP_PATH):
-    #TODO make this function work
-        """
-            Called internally if class instance is initialised with `cleanup_tmps=True`
-        
-            - Find a list of temporary files by looking inside `./tmp`.
-            - Goes through live instances of the ObjectType objects, and subtracts any tempfile references from the aformentioned list.
-            - Deletes the remaining tmp files in the list.
-            - Uses gc.get_objects which can be slow
-        """        
-        if not os.path.exists(TMP_PATH): return
-        files_in_tmp = os.scandir(TMP_PATH)
-        tmp_files_paths = {os.path.abspath(f.path) for f in files_in_tmp if f.name.endswith('.npy')}
 
-        gc.collect()
-        found_refs = set()
-        found_refs.update(tmp_path)
-        
-        for obj in gc.get_objects():
-            if isinstance(obj, ObjectType):
-                for path in obj.tmp_paths:
-                    found_refs.add(path)
 
-        orphans = tmp_files_paths - found_refs
-
-        count = 0
-        for orphan_path in orphans:
-            try:
-                os.remove(orphan_path)
-                count += 1
-            except OSError:
-                print(f"Failed to remove tmp file {orphan_path}, either because its being referenced somewhere or locked.")
-
-        if count > 0:
-            print(f"Cleaned up (deleted) {count} orphaned temporary file(s).")
 
 
 def peterb_run(path: str):
