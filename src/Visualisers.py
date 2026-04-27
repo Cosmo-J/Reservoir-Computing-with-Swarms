@@ -414,13 +414,13 @@ RIDGE_STYLE = {
     "signal_linewidth":2.5,
 
 
-    "predictions_line_styles":"dashed",
+    "predictions_line_styles":"solid",
     "predictions_labels":None,
     "predictions_colors":None,
-    "predictions_linewidths":2.5,
+    "predictions_linewidths":1.5,
 }
 
-def plot_ridge_predictions(predictions, signal, **kwargs):
+def plot_ridge_predictions(X_test, y_test, **kwargs):
     style = {**RIDGE_STYLE, **kwargs}
     
     
@@ -430,26 +430,28 @@ def plot_ridge_predictions(predictions, signal, **kwargs):
         'axes.linewidth': style["axes_linewidth"]
         })
 
-    num_predictions = len(predictions)
+    num_predictions = len(X_test)
     if num_predictions == 0:
         raise ValueError("Predictions must contain at least one prediction dictionary")
     
-    if not isinstance(predictions, list):
-        predictions = [predictions]
+    if not isinstance(X_test, list):
+        X_test = [X_test]
 
     try:
-        signal = np.asarray(signal)
-        assert len(signal.shape)==1
+        y_test = np.asarray(y_test)
+        assert len(y_test.shape)==1
     except:
         raise ValueError("Invalid signal. Must be array like and shape (T,1) where T is at least as many as your plot range.")
+    if isinstance(X_test[0]["prediction_distance"],np.ndarray):
+        pred_dists = [p["prediction_distance"].item() for p in X_test]
+    else:
+        pred_dists = [p["prediction_distance"] for p in X_test]
 
-    pred_dists = [p["prediction_distance"].item() for p in predictions]
     if len(set(pred_dists))!=1:
         print(f"WARNING: Predictions generated with different prediction distances so plot will be incorrect: {pred_dists}")
         print(f"Using the first in list.")
 
     prediction_distance = pred_dists[0]
-    signal_target = signal[prediction_distance:]
 
 
     ratio_width, ratio_height = style["plot_ratio"]
@@ -458,7 +460,7 @@ def plot_ridge_predictions(predictions, signal, **kwargs):
     fig, ax = plt.subplots(figsize=(style["fig_width"], fig_height), dpi=style["dpi"])
     plt.subplots_adjust(bottom=0.2)
 
-    ax.plot(signal_target, color=style["signal_color"], label=style["signal_label"],linewidth=style["signal_linewidth"])
+    ax.plot(y_test, color=style["signal_color"], label=style["signal_label"],linewidth=style["signal_linewidth"])
 
     
     p_colors = style["predictions_colors"]
@@ -485,11 +487,9 @@ def plot_ridge_predictions(predictions, signal, **kwargs):
 
 
 
-    for i, p in enumerate(predictions):
+    for i, p in enumerate(X_test):
         prediction = p["prediction"]
-        prediction_offset = len(signal_target) - len(prediction)
-        x_values = np.arange(prediction_offset, prediction_offset + len(prediction))
-        ax.plot(x_values, prediction, color=p_colors[i], linestyle=p_line_styles[i],linewidth=p_linewidth[i])
+        ax.plot(prediction, color=p_colors[i], linestyle=p_line_styles[i],linewidth=p_linewidth[i])
     
     plt.grid(False)
 
@@ -532,11 +532,11 @@ def plot_ridge_predictions(predictions, signal, **kwargs):
 
 
 C_PROF_STYLE = {
-    "dpi": 200,
+    "dpi": 50,
     "plot_ratio": (1, 1),
-    "fig_width": 8,
+    "fig_width": 10,
     "grid": False,
-    "font_size": 18,
+    "font_size": 34,
     "x_ticks": None,
     "y_ticks": [0, 0.5, 1],
     "axes_linewidth": 1,
@@ -552,8 +552,11 @@ C_PROF_STYLE = {
 def plot_consistency_profile(consistent_capacity, consistency_profile, **kwargs):
     style = {**C_PROF_STYLE, **kwargs}
 
-    plt.rcParams.update({"font.size": style["font_size"], "axes.linewidth": style["axes_linewidth"]})
-
+    plt.rcParams.update(
+        {"font.family": "serif",
+        "mathtext.fontset": "cm",
+        'axes.linewidth': style["axes_linewidth"]
+        })
     if not isinstance(consistency_profile, list):
         consistency_profile = [consistency_profile]
 
@@ -566,8 +569,11 @@ def plot_consistency_profile(consistent_capacity, consistency_profile, **kwargs)
         raise ValueError("consistent_capacity must have the same number of values as consistency_profile.")
 
     truncated_to = style["truncated_to"]
+    if truncated_to is None:
+        truncated_to = len(consistency_profile[0])
+
     ratio_width, ratio_height = style["plot_ratio"]
-    fig_height = style["fig_width"] * ratio_height / ratio_width
+    fig_height = style["fig_width"] * (ratio_height / ratio_width)
     fig, ax = plt.subplots(figsize=(style["fig_width"], fig_height), dpi=style["dpi"])
 
     p_colors = style["gamma2_colors"]
@@ -603,15 +609,26 @@ def plot_consistency_profile(consistent_capacity, consistency_profile, **kwargs)
         if style["show_consistent_capacity"]:
             capacity = np.round(consistent_capacity[i], decimals=style["cc_dp"])
             middle_text = rf"$\Theta={capacity}$" if capacity_labels is None else rf"{capacity_labels[i]} $\Theta={capacity}$"
-            ax.text(truncated_to / 2, 0.5 - i * 0.08, middle_text, color=p_colors[i], fontweight="bold", horizontalalignment="center")
+            ax.text(truncated_to / 2, 0.5 - i * 0.08, middle_text, color=p_colors[i], fontweight="bold", horizontalalignment="center",fontsize=style["font_size"])
 
-    ax.set_xlim(0, truncated_to)
     ax.set_ylim(0, 1)
-    ax.set_xticks([0, truncated_to // 2, truncated_to] if style["x_ticks"] is None else style["x_ticks"])
+    ax.set_xlim(0, truncated_to)
+
+    ax.set_xticks([0, truncated_to // 2, truncated_to])
+    
+    new_y_ticks = []
+    for tick in style["y_ticks"]:
+        if tick%1==0:
+            new_y_ticks.append(int(tick))
+        else:
+            new_y_ticks.append(tick)
     ax.set_yticks(style["y_ticks"])
-    ax.tick_params(axis="both", which="major", labelsize=style["font_size"], direction="in", length=6, width=style["axes_linewidth"], top=True, right=True)
+    ax.set_yticklabels(new_y_ticks)
+
+    ax.tick_params(axis='both', which='major',labelsize=style["font_size"],direction='in',pad=style["fig_width"]*1.5,width=style["axes_linewidth"],size=style["font_size"]/3,top=True,right=True)
+    
     ax.set_xlabel(r"$k$", fontsize=style["font_size"])
-    ax.set_ylabel(r"$\gamma^{2}_{k}$", rotation=0, labelpad=20, fontsize=style["font_size"])
+    ax.set_ylabel(r"$\gamma^{2}_{k}$", rotation=0, labelpad=style["fig_width"]*3, fontsize=style["font_size"],va="center")
     ax.grid(style["grid"])
     fig.tight_layout()
 
