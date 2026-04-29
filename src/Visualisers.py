@@ -1,10 +1,14 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle
 from matplotlib.animation import FuncAnimation
+from matplotlib.collections import LineCollection
+
 
 SIM_STYLE = {
     "boid_size": 10,
     "boid_alpha": 0.85,
+    "arrows_off":True,
     "arrow_scale": 10,
     "arrow_width": 0.003,
 
@@ -44,7 +48,7 @@ SIM_STYLE = {
     "dpi": 200,
 }
 
-def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate=False, **kwargs):
+def swarm_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate=False, **kwargs):
     if frames is None:
         frames = [0]
     frames = list(frames)
@@ -119,8 +123,11 @@ def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate
 
     def make_artists(ax, replica, color, frame_index=0):
         p_init = replica["positions"][frame_index]
-        velocities = replica.get("velocities")
-        signal = replica.get("input_signal")
+        if style["arrows_off"]:
+            velocities=None
+        else:
+            velocities = replica.get("velocities")
+        signal = replica.get("predator_positions")
 
         boids = ax.scatter(p_init[:, 0], p_init[:, 1], s=style["boid_size"], alpha=style["boid_alpha"], color=color, animated=animate)
         boid_trail_color = color if style["boid_trail_color"] is None else style["boid_trail_color"]
@@ -145,7 +152,7 @@ def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate
         positions = replica["positions"]
         pos_now = positions[frame_index]
         velocities = replica.get("velocities")
-        input_signal = replica.get("input_signal")
+        input_signal = replica.get("predator_positions")
 
         artist["boids"].set_offsets(pos_now)
         updated.append(artist["boids"])
@@ -202,7 +209,7 @@ def flat_render(replicas:list, frames=None, bounds=(-8,8), overlay=True, animate
     draw(0)
     return fig, axes[:num_plots]
 
-def torus_render(replicas:list, sim_width, frames=[0], bounds=None, overlay=True, animate=False, **kwargs):
+def torus_swarm_render(replicas:list, sim_width, frames=[0], bounds=None, overlay=True, animate=False, **kwargs):
     style = {**SIM_STYLE, **kwargs}
 
     num_replicas = len(replicas)
@@ -271,7 +278,7 @@ def torus_render(replicas:list, sim_width, frames=[0], bounds=None, overlay=True
 
     def make_artists(ax, replica, color, frame_index=0):
         p_init = replica["positions"][frame_index]
-        signal = replica.get("input_signal")
+        signal = replica.get("predator_positions")
 
         x, y, z = to_torus_3d(p_init, sim_width, style["major_radius"], style["minor_radius"])
         boids = ax.scatter(x, y, z, s=style["boid_size"], alpha=style["boid_alpha"], color=color, animated=animate)
@@ -298,7 +305,7 @@ def torus_render(replicas:list, sim_width, frames=[0], bounds=None, overlay=True
 
         positions = replica["positions"]
         pos_now = positions[frame_index]
-        input_signal = replica.get("input_signal")
+        input_signal = replica.get("predator_positions")
 
         x, y, z = to_torus_3d(pos_now, sim_width, style["major_radius"], style["minor_radius"])
         artist["boids"]._offsets3d = (x, y, z)
@@ -394,6 +401,52 @@ def to_torus_3d(positions, sim_width, major_radius=10, minor_radius=4):
     return x, y, z
 
 
+def plot_kernels(kernel_centres, kernel_widths, replicas: list, frames=None, bounds=(-8, 8), overlay=True, **kwargs):
+    fig, axes = swarm_render(replicas, frames, bounds, overlay, animate=False, **kwargs)
+    for ax in axes:
+        for centre, width in zip(kernel_centres, kernel_widths):
+            circle = Circle((centre[0], centre[1]), radius=width/2, fill=False, edgecolor='grey', alpha=0.5, lw=1)
+            ax.add_patch(circle)
+    return fig, axes
+
+LORENZ_STYLE = {
+    "dpi": 200, 
+    "figsize": (10, 5), 
+    "cmap": "viridis_r", 
+    "linewidth": 0.5, 
+    "sampling_rate": None
+}
+
+def plot_lorenz(data, time_range=[1000, 10000], **kwargs):
+    style = {**LORENZ_STYLE, **kwargs}
+
+    x, y = data[:, 0], data[:, 1]
+    
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    
+    fig, ax = plt.subplots(1, 1, figsize=style["figsize"], dpi=style["dpi"])
+    
+    start, end = time_range
+    segments_int = segments[start:end]
+    time_span = len(segments_int)
+    
+    lc = LineCollection(segments_int, cmap=style["cmap"], norm=plt.Normalize(0, time_span))
+    lc.set_array(np.linspace(0, time_span, time_span))
+    lc.set_linewidth(style["linewidth"])
+    ax.add_collection(lc)
+    
+    ax.set_xlim(x.min() - 1, x.max() + 1)
+    ax.set_ylim(y.min() - 1, y.max() + 1)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+    
+    if style["sampling_rate"] is not None:
+        s_time, e_time = int(start * style["sampling_rate"]), int(end * style["sampling_rate"])
+        ax.text(0.05, 0.95, rf'$t \in [{s_time}, {e_time}]$', transform=ax.transAxes, verticalalignment='top', fontsize=14)
+        
+    plt.tight_layout()
+    return fig, ax
 
 RIDGE_STYLE = {
     "dpi": 100,
