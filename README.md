@@ -1,10 +1,7 @@
 <p align="center">
   <img src="swarm.gif" alt="Swarm Visualization" width="80%">
 </p>
-This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.
-
-Example usage demonstrated in `examples.ipynb`.
-=
+This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.\
 
 ## Feature Overview
 - Boid swarm and Lorenz simulation generation.
@@ -28,10 +25,7 @@ Example usage demonstrated in `examples.ipynb`.
 * **`tests/`**: Included directory for managing test cases, contains a README file explaining recommended methods.
 
 ---
-
-## Getting Started
-
-### Requirements
+# Requirements
 **Python Version:**\
 `3.12.12` or higher 
 
@@ -39,9 +33,11 @@ Example usage demonstrated in `examples.ipynb`.
 ```bash
 pip install -r requirements.txt
 ```
+# Package usage
+Usage of the package in conjunction with detailed explainations are within `examples.ipynb`.
 
 
-### Using the CLI
+# Using the CLI
 `python -m src -h` produces the help menu
 
 ```
