@@ -9,7 +9,7 @@ This is a brief guide/suggestion for how to organise your tests and hopefully ne
 The value in this method is that `.npz` are siblings with **only** their `.ini` config, and no others.
 
 ## Rules
-1. Don't put save two `.ini` config files into 1 directory! 
+1. Don't save two `.ini` config files into 1 directory! 
 2. Don't save `.npz` files to directories which don't also contain their `.ini`.
 3. Once you've generated a run from a `.ini` don't edit it so that you can easily see what params it came from.
 

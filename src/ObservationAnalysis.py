@@ -297,7 +297,7 @@ class ReadoutMethod(ABC):
 
             total_sum = np.zeros(features, dtype='float64')
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean',leave=True,position=1):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Mean',leave=False,position=1):
                 chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
                 sv_chunk = sv[chunk_start:chunk_end]
                 chunk_sum = np.sum(sv_chunk,axis=0)
@@ -315,7 +315,7 @@ class ReadoutMethod(ABC):
                 sv_mean = self._mean(sv)
 
             total_sq_diff = np.zeros(features, dtype='float64')
-            for chunk_start in trange(0, simulation_steps, self.chunk_size, desc='Chunked Standard Deviation',leave=True,position=1):
+            for chunk_start in trange(0, simulation_steps, self.chunk_size, desc='Chunked Standard Deviation',leave=False,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_diff = (sv[chunk_start:chunk_end] - sv_mean) ** 2
                 total_sq_diff += np.sum(chunk_diff, axis=axis)
@@ -363,7 +363,7 @@ class ReadoutMethod(ABC):
             sv_centered_npy, npy_path = create_mmap('sv_centered_',(simulation_steps,features))
             temp_file_paths.append(npy_path)
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Centring',leave=True,position=1):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc='Chunked Centring',leave=False,position=1):
                 chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
                 sv_chunk = sv[chunk_start:chunk_end]
                 chunk_centered = sv_chunk-sv_mean
@@ -413,7 +413,7 @@ class ReadoutMethod(ABC):
             mat_mul_out, npy_path = create_mmap('mat_mul_', (simulation_steps, features))
             temp_file_paths.append(npy_path)
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked matrix multiplication",leave=True,position=1):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked matrix multiplication",leave=False,position=1):
                 chunk_end = min(chunk_start+self.chunk_size,simulation_steps)
                 mat_mul_out[chunk_start:chunk_end] = sv[chunk_start:chunk_end] @ transform
         
@@ -482,7 +482,7 @@ class ReadoutMethod(ABC):
 
             covariances = np.zeros((feats1, feats2), dtype='float64')
 
-            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance",leave=True,position=1):
+            for chunk_start in trange(0,simulation_steps,self.chunk_size,desc="Chunked Covariance",leave=False,position=1):
                 chunk_end = min(chunk_start+self.chunk_size, simulation_steps)
                 sv1_chunk_centered = sv1[chunk_start:chunk_end] - sv1_mean
                 sv2_chunk_centered = sv2[chunk_start:chunk_end] - sv2_mean
@@ -539,7 +539,7 @@ class ReadoutMethod(ABC):
         
 
 
-        with tqdm(desc="Ridge Prediction",position=0,leave=False) as pbar:
+        with tqdm(desc="Ridge Prediction",position=0,leave=True) as pbar:
             # y is an array of predator x coordinates starting from the prediction distance
             y = self.predator_positions[prediction_distance:,0]
             new_total_time = len(y)
@@ -563,13 +563,13 @@ class ReadoutMethod(ABC):
                 temp_file_paths.append(test_path)
 
                 sim_steps_train = X_train.shape[0]
-                for chunk_start in trange(0, sim_steps_train, self.chunk_size, desc='Chunked Standerdising Train',leave=True,position=1):
+                for chunk_start in trange(0, sim_steps_train, self.chunk_size, desc='Chunked Standerdising Train',leave=False,position=1):
                     chunk_end = min(chunk_start + self.chunk_size, sim_steps_train)
                     X_train_stand[chunk_start:chunk_end] = (X_train[chunk_start:chunk_end] - mew) / sigma
                 X_train_stand.flush()
 
                 sim_steps_test = X_test.shape[0]
-                for chunk_start in trange(0, sim_steps_test, self.chunk_size, desc='Chunked Standerdising Test',leave=True,position=1):
+                for chunk_start in trange(0, sim_steps_test, self.chunk_size, desc='Chunked Standerdising Test',leave=False,position=1):
                     chunk_end = min(chunk_start + self.chunk_size, sim_steps_test)
                     X_test_stand[chunk_start:chunk_end] = (X_test[chunk_start:chunk_end] - mew) / sigma
                 X_test_stand.flush()
@@ -1138,7 +1138,7 @@ class KernelReadout(ReadoutMethod):
         r1_t = []
         r2_t = []
         r3_t = []
-        for start in tqdm(chunk_starts, desc="Serial Chunks",leave=True,position=1):
+        for start in tqdm(chunk_starts, desc="Serial Chunks",leave=False,position=1):
             chunk_end = min(start + self.chunk_size, simulation_steps)
 
             #of this chunk
@@ -1209,7 +1209,7 @@ class NaiveReadout(ReadoutMethod):
             self.tmp_paths.append(npy_path)
 
             chunk_starts = range(0, simulation_steps, self.chunk_size)
-            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=False,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_data = x[chunk_start:chunk_end]
                 chunk_steps,chunk_num_boids,_ = chunk_data.shape
@@ -1251,7 +1251,7 @@ class COMReadout(ReadoutMethod):
             self.tmp_paths.append(npy_path)
 
             chunk_starts = range(0, simulation_steps, self.chunk_size)
-            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=False,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_data = x[chunk_start:chunk_end]
                 #Chunked mean not used because boid dimension isn't typically that large so it's a mean of 200 numbers in most of my cases
@@ -1285,7 +1285,7 @@ class NoReadout(ReadoutMethod):
             self.tmp_paths.append(npy_path)
 
             chunk_starts = range(0, simulation_steps, self.chunk_size)
-            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=True,position=1):
+            for chunk_start in tqdm(chunk_starts, desc="Flattening Chunks",leave=False,position=1):
                 chunk_end = min(chunk_start + self.chunk_size, simulation_steps)
                 chunk_data_x = x[chunk_start:chunk_end]
                 chunk_data_v = v[chunk_start:chunk_end]

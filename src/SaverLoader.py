@@ -419,7 +419,7 @@ def load_readout(path: str, memory_map=False):
     return readout_dict
 
 
-def load_npzs(paths: list,re_filter:str="",memory_map=False,load_function=load_run):
+def load_npzs(paths,re_filter:str="",memory_map=False,load_function=load_run):
     """Used to load multiple NPZ files given a load function corresponding to the saved NPZs type
 
     Parameters
