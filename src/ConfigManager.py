@@ -80,7 +80,7 @@ def load_config(path):
         _If `path` does not exist._
     """    
 
-    if not path.endswith('.ini'):
+    if isinstance(path,bool) or not path.endswith('.ini'):
         raise TypeError('Expected path to .ini file. e.g. PATH/TO/INI.ini')
     elif not os.path.exists(path):
         raise FileNotFoundError("Path does not exist.")
@@ -104,7 +104,7 @@ def load_config(path):
     return params
 
 
-def generate_config(path,name='config.ini'):
+def generate_config(path,name='config.ini',**kwargs):
     """
     Used to generate a `.ini` config from which simulator runs can be run
 
