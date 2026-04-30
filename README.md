@@ -1,148 +1,168 @@
-Created in effort to recreate the methods of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/).
+This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.
 
-This Python package provides a framework for simulating, visualising, and analyzing **Boid Swarm Dynamics**, specifically integrated with **Lorenz System** interactions where a predator follows chaotic trajectories. It also includes advanced tools for **Reservoir Computing** analysis, allowing for the prediction of chaotic systems based on swarm states.
+Example usage demonstrated in `examples.ipynb`.
+=
 
-You may also see examples for performing data analysis and readouts in `examples.ipynb`.
----
-
-## Overview
-This package is designed to simulate boid agents in 2D (flat) or 3D (torus-mapped) environments. It facilitates:
-* **Simulation**: Multi-threaded boid simulations with configurable forces (alignment, repulsion, homing, and predator avoidance).
-* **Simulation Configurability**: configure simulation parameters using .ini files for the easy recreation of test cases.
-* **Visualisation**: Interactive 2D and 3D plotting with playback controls.
-* **Analysis**: Evaluation of the swarm as a "reservoir" for predicting external chaotic signals (like the Lorenz system).
-* 
+## Feature Overview
+- Boid swarm and Lorenz simulation generation.
+- Generating simulations.
+- Saving simulations, simulation readouts, trained ridge regression outputs, consistency profiles.
+- Viewing simulations as animations.
+- Plotting frames of a simulation.
+- Plotting ridge regression outputs.
+- Usage of parameters files for use in generating simulations.
+- Multiple methods for creating linear readouts on simulations.
+- Multiple methods for calculating the consistency profile of a readout.
+- Ridge regression pipeline for evaluating readouts.
 
 ## Package Structure
-* **`BoidSimulator`**: The core physics engine handling boid movements and force calculations.
-* **`BoidVisualiser`**: A Matplotlib-based tool for animating simulation results in real-time or from saved files.
-* **`SimParams`**: Used for creating and loading .ini file responsible for defining the simulation parameters.
-* **`SaverLoader`**: Handles saving simulation data to `.npz` format and retrieving previous runs.
-* **`ObservationLayer`**: Provides readout mechanisms (Kernels, Flat, COM) to transform swarm states into usable data for prediction tasks.
+* **`src/Simulators`**: The core physics engine handling boid movements and force calculations as well as the generation of the Lorenz System.
+* **`src/Visualisers`**: Matplotlib-based functions for viewing data outputed from other parts of the package.
+* **`src/ConfigManager`**: Used for creating and loading `.ini` files which define simulation parameters.
+* **`src/SaverLoader`**: Handles the saving and loading of data to `.npz` files, conditionally, using `np.memmap` and temporary `.npy` files.
+* **`src/ObservationAnalysis`**: Defines a base class for performing linear readouts on swarm data, in addition to methods for ridge regression and calculating the consistent capacity. Defines subclasses for Kernel Readouts, COM readouts, Naive Readouts, Flat Readouts
+* **`examples.ipynb`**: Python notebook which explains in detail how to use the package outside of CLI.
+* **`tests/`**: Included directory for managing test cases, contains a README file explaining recommended methods.
 
 ---
 
 ## Getting Started
 
-### Installation
-Ensure you have the following dependencies installed:
+### Requirements
+**Python Version:**\
+`3.12.12` or higher 
+
+**Dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-### Using the package
+
+### Using the CLI
 `python -m src -h` produces the help menu
 
 ```
-usage: __main__.py [-h] [--run [RUN]] [--iterations [ITERATIONS]]
-                   [--seed [SEED]] [--generate-params [GENERATE_PARAMS]]
-                   [--view [VIEW]] [--save [SAVE]]
-                   [--multithread [MULTITHREAD]]
+usage: __main__.py [-h] [--run [RUN]] [--save [SAVE]] [--view [VIEW]] [--iterations [ITERATIONS]] [--chunk [CHUNK]] [--no-seed [NO_SEED]] [--generate-config [GENERATE_CONFIG]]
 
 options:
   -h, --help            show this help message and exit
   --run [RUN], -r [RUN]
-                        Run a simulation given a .ini file path of parameters.
-  --iterations [ITERATIONS], -i [ITERATIONS]
-                        Number of times you want the simulation to be run.
-  --seed [SEED]         Give a random seed to produce identical runs. Default
-                        seed is '1'.
-  --generate-params [GENERATE_PARAMS], -g [GENERATE_PARAMS]
-                        generate an empty .ini with default parameters.
-  --view [VIEW], -v [VIEW]
-                        View a previous simulation, given the file path of a
-                        valid '.npz'. Defaults to true, which can be used to
-                        view a generated run.
+                        Path to a .ini config file containing simulation parameters.
   --save [SAVE], -s [SAVE]
-                        If iterations is more than 1, use to specify the
-                        directory in which a run is saved. Otherwise it can be
-                        used to choose a specific save name
-  --multithread [MULTITHREAD], -mt [MULTITHREAD]
-                        When running multiple iterations, set true to enable
-                        multithreading
+                        Path to directory where simulations are saved on completion.
+  --view [VIEW], -v [VIEW]
+                        Path to an .npz containing simulation data. Animates the simulation.
+  --iterations [ITERATIONS], -i [ITERATIONS]
+                        Number of times the simulation is run. Default is 1.
+  --chunk [CHUNK], -c [CHUNK]
+                        Int value for chunk size used; enables use of numpy memory mapping.
+  --no-seed [NO_SEED]   Overide config seed with a random value.
+  --generate-config [GENERATE_CONFIG], -g [GENERATE_CONFIG]
+                        Path to directory where a template .ini will be generated.
 
 ```
 
 
-#### Initialising Test Cases
-To run a simulation, you need to specify a .ini file from which to load the parameters of said simulation. The command below can be used to generate default_params.ini
-
-The command will also generate a tests folder, and a default_test_case directory within which, default_params.ini will be created
+#### Initialising Test Cases / Generating Parameters
+Running a simulation requires a set of compatible parameters stored in a `.ini` file. A template config can be generated using:
 ```bash
 python -m src --generate-params ./
 ```
-These config files can be renamed to anything you like.
-The intended use is that different tests cases can be outlined with different config .ini files.
+Which creates the config.ini file in the path specified.\
+`.ini` config files may be given any name, but must use the `.ini` extension.\
 
-See an example file structure below which shows different folders representing different test cases with their corresponding ini files (arbitrarily named).  
-*See also .npz runs produced from these .ini files*
-```
-tests
-├── donut
-│   └── donut.ini
-│   ├── tests_run.npz
-│	└── tests_run0.npz
-└── default_test_case
-    └── default_params.ini
-    ├── tests_run.npz
-	└── tests_run0.npz
-```
+The recommended use case is to create different `.ini` config files for different test cases. The recommended method for managing is explained in the README found within `tests/`.
+
+##### Config Parameters
+| Parameter | Description |
+| :--- | :--- |
+| **Simulation Parameters** | |
+| `delta_t` | Time interval between simulation step time interval. |
+| `simulation_steps` | Total number of simulation steps. |
+| `boid_count` | Number of boids simulated. |
+| `spawn_min` | Minimum spawn boid spawn position ($x^+, y^+$). |
+| `spawn_max` | Maximum spawn boid spawn position ($x^-, y^-$). |
+| `random_velocity` | Whether to override the seed, and initialise the boids with random velocities. |
+| `random_position` | Whether to override the seed, and initialise the boids with random positions. |
+| `random_seed` | Random seed used for generating the positions and velocities (given no overrides). |
+| `predator` | Whether or not to calculate the total force of each boid with a predator force. I.e. option to disable the predator. |
+| **Force Parameters** | |
+| `k_speed` | Speed value used for friction force calculation. |
+| `k_repulsion` | Repulsion Force coefficient. |
+| `k_alignment` | Alignment Force coefficient. |
+| `k_homing` | Homing Force coefficient. |
+| `k_friction` | Friction Force coefficient. |
+| `k_predator` | Predator Force coefficient. |
+| `alpha` | Force Sigmoid parameter. |
+| `beta` | Force Sigmoid parameter. |
+| **Neighbourhood Radii** | |
+| `rad_repulsion` | Radius for determining repulsion neighbourhood. |
+| `rad_alignment` | Radius for determining alignment neighbourhood. |
+| `rad_predator` | Radius for determining the boids affected by the predator force. |
+| **Lorenz System Parameters** | |
+| `l_sigma` | Parameter used in ODEs. |
+| `l_rho` | Parameter used in ODEs. |
+| `l_beta` | Parameter used in ODEs. |
+| `x_lorenz` | Starting x position. |
+| `y_lorenz` | Starting y position. |
+| `z_lorenz` | Starting z position. |
+| `l_sampling_rate` | Rate at which the Lorenz is sampled by the predator. |
+
 
 #### Running Simulations
 *a .ini as described in the previous section is required for running a simulation!*
 
 ##### Dry Run
-To run a simulation you can use the following command:
+The following command runs a simulation given a `.ini` config file:
 ```bash
-python -m src --run PATH_TO_INI/default_params.ini
+python -m src --run PATH_TO_INI/config.ini
 ```
-Since neither --view or --save have been specified above, it counts as a dry run which can be used to confirm that no errors have occurred in running the simulation.
+A dry run can be used to validate that your `.ini` contains the neccesary parameters, as well as that your installation is correct.
 
-##### Running and Saving
-The `--save` parameter can be used to specify a save path where the run will be saved as a .npz file. Bear in mind that these files can get very large!
+
+##### Saving
+The `--save` parameter specifies directory where a simulation will be saved. The simulation is saved as an `.npz` file.
 ```bash
-python -m src --run PATH_TO_INI/default_params.ini --save SAVE_PATH/
+python -m src --run PATH_TO_INI/config.ini --save SAVE_PATH/TEST_CASE/runs/
 ```
+The README within `tests/` explains a recommended method for managing test cases.
 
-Later sections go over loading .npz runs so that further analysis can be performed.
 ##### Multiple Runs
-Multiple runs can be conducted using the `--iterations` or '-i' parameter. 
-
-The command below shows a command which will run 10 simulations based on `default_params.ini` in turn and save them all to the specified save path.
+Multiple simulations can be simulated (and saved) from one command through using the following:
 ```bash
-python -m src --run PATH_TO_INI/default_params.ini --save SAVE_PATH/ -i 10
+python -m src --run PATH_TO_INI/config.ini --save SAVE_PATH/TEST_CASE/runs/ --iterations 5
 ```
+which in this case, would generate 5 simulations which use the parmaters defined in `config.ini`, and save each of them to the path `SAVE_PATH/TEST_CASE/runs/`.
 
-Multithreading is supported and can be used to run multiple iterations concurrently. Although it's a fairly adhoc addition and I haven't made any effort to verify the difference it makes/modify the code so that it can be properly utilised. All to say, in my case, it doesn't seem to make a huge difference for the overall runtime with multiple iterations. Additionally, currently only quad threading is supported.
-
-The example command below shows multithreading `-mt` being used in aid of generating 10 iterations of a run.
+##### Overiding the `.ini` seed
+In some instances, one may want to overide the random seed defined in a given `.ini` config:
 ```bash
-python -m src --run PATH_TO_INI/default_params.ini --save SAVE_PATH/ -i 10 -mt
+python -m src --run PATH_TO_INI/config.ini --save SAVE_PATH/TEST_CASE/runs/ --no-seed
 ```
+In this case, a swarm simulation will initialise the boids with random positions and velocites, regardless of any parameters found in the `.ini`.
+
+
+##### Concurrent Saving / Chunking
+The following command enables concurrent saving, across a given chunk size:
+```bash
+python -m src --run PATH_TO_INI/config.ini --save SAVE_PATH/TEST_CASE/runs/ -c 1000
+```
+In this case, defining that the simulation should be calculated in `1000` simulation step chunks. After a chunk has been generated, the positions and velocites are flushed to tempory .npy files which are cleaned up after execution completes. If a save path has been specified as in this case, the full simulation data is saved to a .npz file, before the `.npy` files are removed.
+
 ##### Viewing
-Runs can be viewed immediately after generation or later by specifying an .npz
-
-Below is the same command from the previous section besides for the `--view` at the end, which means when the run is complete, a popup appears where the simulation can be viewed.
+Use the following command to pop-up an animated view of one or many runs, imediatly after execution, or, on existing `.npz` files:
 ```bash
-python -m src --run PATH_TO_INI/default_params.ini --save SAVE_PATH/ --view
+echo "Generate 2 runs, view them after execution has completed"
+python -m src --run PATH_TO_INI/config.ini -i 2 -v
 ```
-
-You can also use `-v` to view saved runs
 ```bash
-python -m src --view PATH_TO_SAVED_RUN/tests.npz
+echo "View all simulations within the given directory, overlayed"
+python -m src -v PATH/TO/RUNs/
 ```
-Or on a directory containing multiple .npz files to view multiple at once
 ```bash
-python -m src --view DIR_CONTAINING_RUNS/
+echo "View one simulation"
+python -m src -v PATH/TO/RUNs/some_run.npz
 ```
-
-Viewing is very versatile. It can be used:
-- when no save path is specified
-`python -m src --run PATH_TO_INI/default_params.ini --view`
-- when multiple iterations have been specified
-`python -m src --run PATH_TO_INI/default_params.ini --view -i 10`
-
-In the cases where viewing is conducted on more than one run, the runs are overlayed and given different colours.
 
 #### Loading Simulations
 Loading runs is of interest when wanting to perform further analysis on the results. It can be done by loading one of the included packages:
@@ -165,28 +185,3 @@ datas is a list of dictionaries corresponding to the loaded runs. See the dictio
 | `config_title`       | `str`        | The name of the parameter file or setup used for the run.                                               |
 Note that some of these dictionary items are fairly redundant and only exist for conveniences sake. Moreover, `config` and `config_title` are saved to protect against the case where a user forgets the .ini used to produce a run.
 
-
-#### Analysing Simulations
-Simulations can be analysed using `ObservationLayer` which defines classes for getting readouts from a reservoir. Included is `NaiveReadout`, `KernelReadout`, `COMReadout` which are different classes for observing the reservoir described in [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). Additionally, the a superclass `ObservationAndPrediction` is included from which the two aforementioned readout classes extend. This exists for users who may want to define their own subclass which defines a specific methodology for reading reservoir states.
-
-Below shows some examples of these classes being used:
-```python
-run_path = '/PATH_TO_RUNS'
-
-datas = SaverLoader.find_npzs(run_path)
-kr = KernelReadout(200,datas[0],datas[1],washout=1000)
-
-sv1 = kr.get_reservoir_state_vectorised(kr.replica1)
-sv2 = kr.get_reservoir_state_vectorised(kr.replica2)
-
-cc, g2=kr.calc_consistency_profile_v1(sv1,sv2)
-
-kr.plot_consistency_profile(cc,g2,truncated_to=100)
-
-prediction,corr_coef = kr.ridge_prediction(sv2,prediction_distance=8)
-
-plot = kr.get_plot(prediction,corr_coef,[0,2000])
-
-plot.set_ybound(-7,7)
-plt.show()
-```
