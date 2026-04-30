@@ -473,7 +473,7 @@ RIDGE_STYLE = {
     "predictions_linewidths":1.5,
 }
 
-def plot_ridge_predictions(X_test, y_test, **kwargs):
+def plot_ridge_predictions(X_test, y_test, prediction_distance, **kwargs):
     style = {**RIDGE_STYLE, **kwargs}
     
     
@@ -495,16 +495,23 @@ def plot_ridge_predictions(X_test, y_test, **kwargs):
         assert len(y_test.shape)==1
     except:
         raise ValueError("Invalid signal. Must be array like and shape (T,1) where T is at least as many as your plot range.")
-    if isinstance(X_test[0]["prediction_distance"],np.ndarray):
-        pred_dists = [p["prediction_distance"].item() for p in X_test]
-    else:
-        pred_dists = [p["prediction_distance"] for p in X_test]
+    
+    try:
+        if isinstance(X_test[0]["prediction_distance"],np.ndarray):
+            pred_dists = [p["prediction_distance"].item() for p in X_test]
+        else:
+            pred_dists = [p["prediction_distance"] for p in X_test]
 
-    if len(set(pred_dists))!=1:
-        print(f"WARNING: Predictions generated with different prediction distances so plot will be incorrect: {pred_dists}")
-        print(f"Using the first in list.")
-
-    prediction_distance = pred_dists[0]
+        print(f"Prediction distance data found on X_test, comparing between themselves and with given parameter: {prediction_distance}")
+        if len(set(pred_dists))!=1:
+            print(f"WARNING: Predictions generated with different prediction distances so plot will be incorrect: {pred_dists}")
+            print(f"Using the first in list.")
+        elif pred_dists[0] != prediction_distance:
+            print(f"WARNING: Predictions generated with different prediction distances {pred_dists} than the given parameter: {prediction_distance}. Defaulting to the parameter, the plot might be incorrect.")
+        else:
+            prediction_distance = pred_dists[0]
+    except:
+        print(f"No Prediction distance data found on X_test, using given parameter {prediction_distance}.")
 
 
     ratio_width, ratio_height = style["plot_ratio"]

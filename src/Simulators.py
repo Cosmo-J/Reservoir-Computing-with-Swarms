@@ -278,25 +278,6 @@ class BoidSimulator:
             "config":self.p
         }
 
-    @staticmethod
-    def construct_view_dict(datas:list):
-        """
-        This function is used for converting the data output of my simulator into the more standardised input required by functions in BoidVisualiser.py
-        In other words, the function exists for compatability sake.
-        Parameters
-        ----------
-        datas : list
-            list of data outputs from the class
-        """
-        replicas_for_visualiser = []
-        for d in datas:
-            pos = d['positions']
-            vel = d['velocities']
-            signal = d['predator_positions']
-            replica_dict = {'positions':pos,'velocities':vel,'input_signal':signal}
-            replicas_for_visualiser.append(replica_dict)
-        return replicas_for_visualiser
-
 
 class LorenzSimulator:
     def __init__(self,sigma,rho,beta):
