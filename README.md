@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="swarm.gif" alt="Swarm Visualization" width="80%">
+</p>
 This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.
 
 Example usage demonstrated in `examples.ipynb`.
