@@ -10,8 +10,8 @@ TMP_PATH = 'tmp'
 PREDICTIONS_DIR_NAME = "predictions"
 RUNS_DIR_NAME = "runs"
 READOUTS_DIR_NAME = "readouts"
-PCAS_DIR_NAME = "pcas"
-SUB_DIR_NAMES = [PREDICTIONS_DIR_NAME, RUNS_DIR_NAME, READOUTS_DIR_NAME, PCAS_DIR_NAME]
+CC_DIR_NAME = "cc"
+SUB_DIR_NAMES = [PREDICTIONS_DIR_NAME, RUNS_DIR_NAME, READOUTS_DIR_NAME, CC_DIR_NAME]
 
 class Saver:
     def __init__(self,save_path):
@@ -19,7 +19,7 @@ class Saver:
         self.predictions_dir_name = PREDICTIONS_DIR_NAME
         self.runs_dir_name = RUNS_DIR_NAME
         self.readouts_dir_name = READOUTS_DIR_NAME
-        self.pcas_dir_name = PCAS_DIR_NAME
+        self.cc_dir_name = CC_DIR_NAME
         self.sub_dir_names = SUB_DIR_NAMES
 
         self.save_path = self._validate_save_path(save_path)
@@ -243,17 +243,17 @@ class Saver:
 
         return full_save_path_and_name
 
-    def save_pca(self,data,prefix=""):
+    def save_cc(self,data,prefix=""):
         assert os.path.exists(self.save_path), f"{self.save_path} - Save path no longer exists."  
         if prefix=="": 
-            name = f"{os.path.basename(self.save_path)}_pcas"
+            name = f"{os.path.basename(self.save_path)}_cc"
         else:
             if prefix.isalnum():
-                name = f"{prefix}_pcas"
+                name = f"{prefix}_cc"
             else:
                 raise ValueError(f"Suffix {prefix} is an invalid file name. Must be alpha numeric only.")
         main_save_path = self._unique_name(name) 
-        name = os.path.join(self.pcas_dir_name,name)
+        name = os.path.join(self.cc_dir_name,name)
         subdir_save_path = self._unique_name(name) 
 
         candidate_paths = []
@@ -353,15 +353,15 @@ def load_run(path: str, memory_map=False):
     return run_dict
 
 
-def load_pca(path:str,memory_map=False):
-    pcas = {}
+def load_cc(path:str,memory_map=False):
+    ccs = {}
     npz = np.load(path, allow_pickle=True)
     with np.load(path, allow_pickle=True) as npz:
-        pcas["methodology"] = npz.get("methodology")
-        pcas["consistent_capacity"] = npz.get("consistent_capacity")
-        pcas["consistency_profile"] = npz.get("consistency_profile")
-        pcas["simulation_config"] = npz.get("simulation_config")
-    return pcas
+        ccs["methodology"] = npz.get("methodology")
+        ccs["consistent_capacity"] = npz.get("consistent_capacity")
+        ccs["consistency_profile"] = npz.get("consistency_profile")
+        ccs["simulation_config"] = npz.get("simulation_config")
+    return ccs
 
 
 def load_prediction(path: str, memory_map=False):
@@ -431,7 +431,7 @@ def load_npzs(paths,re_filter:str="",memory_map=False,load_function=load_run):
     memory_map : bool, optional
         whether or not to use numpy memory mapping when loading the npzs, by default False
     load_function : callable, optional
-        function used to load the npz files. Options are load_run, load_pca, load_prediction, load_readout. By default load_run
+        function used to load the npz files. Options are load_run, load_cc, load_prediction, load_readout. By default load_run
 
     Returns
     -------

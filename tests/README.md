@@ -22,12 +22,17 @@ Below you can see an example file structure which demonstrates a few things:
 
 ```
 tests
-├── donut
-│   └── donut.ini
-│   ├── donut_run.npz
-│	└── donut_run0.npz
-└── default
-    └── config.ini
-    ├── default_run.npz
-	└── default_run0.npz
+├── basic_tests
+│   ├── basic_test_case.ini
+│   ├── predictions
+│   │   └── ...
+│   ├── readouts
+│   │   └── ...
+│   └── runs
+│     └── basic_run.npz
+└── other_tests
+    ├── ....
+    └── runs
+      └── other_run.npz
+
 ```
