@@ -2,7 +2,7 @@
   <img src="swarm.gif" alt="Swarm Visualization" width="80%">
 </p>
 
-This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.\
+This python pacakge was created for the final project of my bachelors degree, and  is a recreation of [Lymburn et al 2021](https://research-repository.uwa.edu.au/en/publications/reservoir-computing-with-swarms/). The paper introduced a reservoir computing framework introduced, which uses a Reynolds boids inspired swarm as the reservoir, for a Lorenz System prediction task.
 
 ## Feature Overview
 - Boid swarm and Lorenz simulation generation.
@@ -26,14 +26,27 @@ This python pacakge was created for the final project of my bachelors degree, an
 * **`tests/`**: Included directory for managing test cases, contains a README file explaining recommended methods.
 
 ---
-# Requirements
-**Python Version:**\
-`3.12.12` or higher 
+# Installation
+To install from your command line,
+```bash
+git clone https://github.com/Cosmo-J/Reservoir-Computing-with-Swarms.git
+cd Reservoir-Computing-with-Swarms/
+```
+Ensure you have python version `3.12.12` or higher installed, which you can check using,
+```bash
+python3 --version
+```
+(or depending on your environment)
+```
+python --version
+```
+I recommend setting up a [virtual environment](https://docs.python.org/3/library/venv.html) in the repository.
 
-**Dependencies:**
+Once you've validated your python installation, download the required dependencies,
 ```bash
 pip install -r requirements.txt
 ```
+
 # Package usage
 Usage of the package in conjunction with detailed explainations are within `examples.ipynb`.
 
