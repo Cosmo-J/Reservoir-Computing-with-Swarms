@@ -1,13 +1,13 @@
 # Tests Directory Guide
-This is a brief guide/suggestion for how to organize your tests and hopefully never mix up your save files.
+This is a brief guide/suggestion for how to organise your tests and hopefully never mix up your save files.
 
 ## Setting Up new tests cases
 1. Create a new directory inside tests named for your test case e.g. `tests/basic_tests/`.
-2. Initialize a [Saver class](src/SaverLoader.py) with that directory, thus automatically creating subdirs: runs, predictions, readouts, and ccs.
+2. Initialise a [Saver class](src/SaverLoader.py) with that directory, thus automatically creating subdirs: runs, predictions, readouts, and ccs.
 2. Generate a `.ini` config inside your new test case directory e.g. `tests/basic_tests/basic_test_case.ini`.
-3. Use your [Saver class](src/SaverLoader.py) to save runs, predictions, readouts, and ccs, for which the saver class will automatically organize them into their corresponding directories.
+3. Use your [Saver class](src/SaverLoader.py) to save runs, predictions, readouts, and ccs, for which the saver class will automatically organise them into their corresponding directories.
 
-Since the [load_npzs function](src/SaverLoader.py) does distinguish between `.npz` save file data, organizing in this way makes its use easier.
+Since the [load_npzs function](src/SaverLoader.py) does distinguish between `.npz` save file data, organising in this way makes its use easier.
 Moreover, this ensures that all the saved files correspond with the `.ini` config file in their parent directory.
 
 ## Rules
